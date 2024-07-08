@@ -56,7 +56,7 @@ def save_or_update_connection_details(url, username, password, connection_name):
         config.write(configfile)
     
     # Refresh the list of saved connections and select the newly created connection    
-    st.rerun()    
+    # st.experimental_rerun()
 
 # Function to load saved connections from the properties file
 def load_saved_connections():
@@ -206,7 +206,8 @@ def main():
                 st.dataframe(st.session_state.csv_data.style.set_caption("Decoded CSV Data").set_table_styles([{
                 'selector': 'th',
                 'props': [('font-weight', 'bold')]
-                }]), width=5000)    
+                }]), width=5000)                 
+   
             except Exception as e:
                 pass
     st.session_state.selected_connection = connection_name
