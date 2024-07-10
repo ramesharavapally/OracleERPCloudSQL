@@ -115,5 +115,4 @@ def create_report(url , username , password , datamodel_name , report_name):
     if not report_result:
         result = __upload_object(url , username , password , report_name , 'xdo')        
         if result == False:
-            raise ValueError('Error while creating report')    
-    print('Done')
+            raise ValueError('Error while creating report')        

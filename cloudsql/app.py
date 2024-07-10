@@ -135,11 +135,14 @@ def main():
         
     if selected_connection:        
         url, username, password  = get_connection_details(selected_connection) 
-        if selected_connection != st.session_state.selected_connection :
-            create_report(url , username , password , get_datamodel_name() , get_report_name())
+        if selected_connection != st.session_state.selected_connection :  
+            try:          
+                create_report(url , username , password , get_datamodel_name() , get_report_name())
+            except Exception as e:
+                st.error(f"Error occured while creating DM {e}")
         st.session_state.selected_connection = selected_connection
     else:
-        url, username, password , connection_name= '', '', '' ,''
+        url, username, password , connection_name= '', '', '' ,''        
 
     # Input fields for URL, username, and password
     connection_name = st.sidebar.text_input('Connection Name', value=connection_name)
@@ -150,7 +153,11 @@ def main():
     # Save button to store or update connection details
     if st.sidebar.button('Save'):
         save_or_update_connection_details(url_input, username_input, password_input, connection_name)        
-        create_report(url , username , password , get_datamodel_name() , get_report_name())
+        try:            
+            create_report(url_input , username_input , password_input , get_datamodel_name() , get_report_name())
+        except Exception as e:
+            st.error(f"Error occured while creating DM in Save  {e}")
+            return
         st.session_state.selected_connection = selected_connection
 
     st.write(f'Connection name : {connection_name}')
