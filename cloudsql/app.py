@@ -157,7 +157,7 @@ def main():
             create_report(url_input , username_input , password_input , get_datamodel_name() , get_report_name())
         except Exception as e:
             st.error(f"Error occured while creating DM in Save  {e}")
-            return
+                        
         st.session_state.selected_connection = selected_connection
 
     st.write(f'Connection name : {connection_name}')
