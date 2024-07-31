@@ -1,0 +1,61 @@
+<?xml version = '1.0' encoding = 'utf-8'?>
+<dataModel xmlns="http://xmlns.oracle.com/oxp/xmlp" version="2.1" xmlns:xdm="http://xmlns.oracle.com/oxp/xmlp" xmlns:xsd="http://wwww.w3.org/2001/XMLSchema" defaultDataSourceRef="Oracle BI EE">
+   <dataProperties>
+      <property name="include_parameters" value="false"/>
+      <property name="include_null_Element" value="false"/>
+      <property name="include_rowsettag" value="false"/>
+      <property name="exclude_tags_for_lob" value="false"/>
+      <property name="EXCLUDE_LINE_FEED_AND_CARRIAGE_RETURN_FOR_LOB" value="false"/>
+      <property name="xml_tag_case" value="upper"/>
+      <property name="generate_output_format" value="xml"/>
+      <property name="enforce_validation_status" value="true"/>
+      <property name="optimize_query_executions" value="false"/>
+      <property name="enable_xml_chunks" value=""/>
+      <property name="sql_monitor_report_generated" value="false"/>
+   </dataProperties>
+   <dataSets>
+      <dataSet name="test" type="simple">
+         <sql dataSourceRef="ApplicationDB_FSCM" nsQuery="true" sp="true" xmlRowTagName="" bindMultiValueAsCommaSepStr="false">
+            <![CDATA[DECLARE
+    TYPE refcursor IS ref CURSOR;
+    xdo_cursor        REFCURSOR;
+    l_query VARCHAR2(32000);
+	
+    FUNCTION get_query (p_query IN VARCHAR2)
+    RETURN VARCHAR2
+    IS      
+    BEGIN        
+        RETURN utl_raw.cast_to_varchar2(utl_encode.base64_decode(UTL_RAW.CAST_TO_RAW( p_query )));    
+    END;
+BEGIN
+    l_query := get_query(:query1);
+
+    OPEN :xdo_cursor FOR
+      l_query;
+END;]]>
+         </sql>
+      </dataSet>
+   </dataSets>
+   <output rootName="DATA_DS" uniqueRowName="false">
+      <nodeList name="test"/>
+   </output>
+   <eventTriggers/>
+   <lexicals/>
+   <parameters>
+      <parameter name="query1" dataType="xsd:string" rowPlacement="1">
+         <input label="query1"/>
+      </parameter>
+   </parameters>
+   <valueSets/>
+   <bursting/>
+   <validations>
+      <validation>N</validation>
+   </validations>
+   <display>
+      <layouts>
+         <layout name="test" left="280px" top="320px"/>
+         <layout name="DATA_DS" left="0px" top="320px"/>
+      </layouts>
+      <groupLinks/>
+   </display>
+</dataModel>

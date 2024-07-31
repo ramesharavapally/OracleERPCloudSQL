@@ -6,11 +6,12 @@ from io import BytesIO
 import configparser
 import os
 from reportutils import create_report
+import urllib.parse
 
 # Set page configuration to wide mode by default
 st.set_page_config(layout="wide" ,
-                   page_title="Cloud SQL",
-                   page_icon="🌊",)
+                   page_title="Local SQL",
+                   page_icon="🌈",)
 pd.set_option("styler.render.max_elements", 50000000)
 CONFIG_FILE = 'config.ini'
 
@@ -29,16 +30,25 @@ def set_css_style():
         """,
         unsafe_allow_html=True
     )
+    
+def custom_encode(string):
+    encoded_string = urllib.parse.quote(string, safe='')  
+    encoded_string = encoded_string.replace('~' , "%7E")  
+    return encoded_string    
 
-def get_report_name():
+def get_report_name(user_name: str):
     config = configparser.ConfigParser()
     config.read(CONFIG_FILE)
-    return config['DEFAULT']['report_path']
+    xdo_name = config['DEFAULT']['report_path']
+    xdo_name = f"/~{user_name}{xdo_name}"    
+    return xdo_name
 
-def get_datamodel_name():
+def get_datamodel_name(user_name):
     config = configparser.ConfigParser()
     config.read(CONFIG_FILE)
-    return config['DEFAULT']['datamodel_path']
+    xdm_name = config['DEFAULT']['datamodel_path']
+    xdm_name = f"/~{user_name}{xdm_name}"    
+    return xdm_name
 
 # Function to save or update connection details to a properties file
 def save_or_update_connection_details(url, username, password, connection_name):
@@ -139,7 +149,7 @@ def main():
         url, username, password  = get_connection_details(selected_connection) 
         if selected_connection != st.session_state.selected_connection :  
             try:          
-                create_report(url , username , password , get_datamodel_name() , get_report_name())
+                create_report(url , username , password , get_datamodel_name(username) , get_report_name(username))
             except Exception as e:
                 st.error(f"Error occured while creating DM {e}")
         st.session_state.selected_connection = selected_connection
@@ -156,7 +166,8 @@ def main():
     if st.sidebar.button('Save'):
         save_or_update_connection_details(url_input, username_input, password_input, connection_name)        
         try:            
-            create_report(url_input , username_input , password_input , get_datamodel_name() , get_report_name())
+            
+            create_report(url_input , username_input , password_input , get_datamodel_name(username_input) , get_report_name(username_input))
         except Exception as e:
             st.error(f"Error occured while creating DM in Save  {e}")
                         
@@ -190,7 +201,7 @@ def main():
                           </pub:values>
                        </pub:item>
                     </pub:parameterNameValues>
-                    <pub:reportAbsolutePath>{get_report_name()}</pub:reportAbsolutePath>
+                    <pub:reportAbsolutePath>{get_report_name(username_input)}</pub:reportAbsolutePath>
                     <pub:sizeOfDataChunkDownload>-1</pub:sizeOfDataChunkDownload>
                  </pub:reportRequest>
               </pub:runReport>

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<metadata>
+  <entries>
+    <entry>
+      <key><![CDATA[bip:DisplayName]]></key>
+      <value><![CDATA[SampleReport]]></value>
+    </entry>
+    <entry>
+      <key><![CDATA[DESCRIPTION]]></key>
+      <value><![CDATA[]]></value>
+    </entry>
+    <entry>
+      <key><![CDATA[propertyMap]]></key>
+      <value><![CDATA[1]]></value>
+    </entry>
+    <entry>
+      <key><![CDATA[path]]></key>
+      <value><![CDATA[%2F%7Econversion.user%2Fpy_sql%2FSampleReport.xdm]]></value>
+    </entry>
+  </entries>
+</metadata>
