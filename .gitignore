@@ -1,3 +1,6 @@
 cloudsql_venv/ 
 CloudConsole - Shortcut.lnk
 localuser_sql - Shortcut.lnk
+__pycache__/
+*.pyc
+*.pyo
