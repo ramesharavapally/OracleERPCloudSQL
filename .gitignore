@@ -1,5 +1,4 @@
 cloudsql_venv/ 
 CloudConsole - Shortcut.lnk
-localuser_sql - Shortcut.lnk
 # Local saved queries / history database
 cloudsql/cloudsql_queries.db
