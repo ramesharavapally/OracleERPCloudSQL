@@ -5,6 +5,7 @@ from io import BytesIO
 
 import pandas as pd
 import streamlit as st
+from packaging.version import Version
 
 import bip_client
 import connections
@@ -20,6 +21,14 @@ from reportutils import create_report
 st.set_page_config(layout="wide" ,
                    page_title="Cloud SQL",
                    page_icon="🌊",)
+
+# Features such as build-on-click downloads need Streamlit 1.52+. Explain the fix instead of crashing later.
+MIN_STREAMLIT = '1.52'
+if Version(st.__version__) < Version(MIN_STREAMLIT):
+    st.error(f'This app needs Streamlit {MIN_STREAMLIT} or newer, but it is running with Streamlit {st.__version__}.')
+    st.markdown('Close this window and start the app with **CloudConsole.bat**. If it still appears, '
+                'run **setup.bat** once more; it installs the right versions into `cloudsql_venv`.')
+    st.stop()
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
 ROW_LIMITS = [100, 1000, 10000, 'All']
 EDITOR_HEIGHT = 300

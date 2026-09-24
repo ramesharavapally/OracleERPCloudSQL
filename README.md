@@ -8,10 +8,12 @@ A small TOAD-style SQL workbench for Oracle ERP (Fusion) Cloud. It runs **on you
 
 ## Installation
 
-1. **Python**: install Python 3.10 or newer.
-2. **Clone** this repository.
-3. **Setup**: run `setup.bat`. It creates `cloudsql_venv` and installs `requirements.txt`. Run it again after every update.
+1. **Python**: install Python 3.10 or newer (tick *Add python.exe to PATH*).
+2. **Get the code**: clone this repository or download it as a ZIP and unpack it.
+3. **Setup**: run `setup.bat`. It creates `cloudsql_venv` in the same folder and installs `requirements.txt`. Run it again after every update, and once in every new folder (a new ZIP download has no `cloudsql_venv` yet).
 4. **Start**: run `CloudConsole.bat`. The app opens at <http://localhost:8501>.
+
+> Always start the app with `CloudConsole.bat`. It uses the Python inside `cloudsql_venv`, which has the right package versions. Running `streamlit run app.py` from a normal command prompt uses your global Python instead, and an older Streamlit there will not work (the app then says which version it found).
 
 ---
 

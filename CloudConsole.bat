@@ -1,12 +1,13 @@
 @echo off
-REM Step 1: Activate py_automate venv
-call %~dp0cloudsql_venv\Scripts\activate
+REM Starts Cloud SQL with the Python of cloudsql_venv (never the global Python)
+set "VENV_PY=%~dp0cloudsql_venv\Scripts\python.exe"
 
-REM Step 2: Navigate to ERPE2E\tests folder
+if not exist "%VENV_PY%" (
+    echo cloudsql_venv was not found next to this file.
+    echo Run setup.bat once, then start CloudConsole.bat again.
+    pause
+    exit /b 1
+)
+
 cd /d "%~dp0cloudsql"
-
-REM Step 3: Run pyteest -m jobs command
-streamlit run app.py
-
-REM Step 4: Deactivate py_automate venv (optional)
-deactivate
+"%VENV_PY%" -m streamlit run app.py
