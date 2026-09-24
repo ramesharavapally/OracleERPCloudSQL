@@ -5,7 +5,6 @@
 <style>
   html, body { margin: 0; padding: 0; background: transparent; }
   #editor { width: 100%; border: 1px solid rgba(128, 128, 128, 0.35); border-radius: 6px; box-sizing: border-box; }
-  #hint { font: 12px sans-serif; color: #888; padding: 2px 4px; }
 </style>
 <script src="ace/ace.js"></script>
 <script src="ace/ext-language_tools.js"></script>
@@ -15,7 +14,6 @@
 </head>
 <body>
 <div id="editor"></div>
-<div id="hint">Ctrl+Enter runs the statement under the cursor (statements are separated by a blank line or ;) or the selected text · Ctrl+Space for suggestions</div>
 <script>
   // Minimal Streamlit component protocol (no build step, no npm packages needed)
   function toStreamlit(type, data) {
@@ -119,7 +117,7 @@
       height = args.height || 300;
       document.getElementById("editor").style.height = height + "px";
       editor.resize();
-      toStreamlit("streamlit:setFrameHeight", { height: height + 22 });
+      toStreamlit("streamlit:setFrameHeight", { height: height + 4 });
     }
   });
 

@@ -33,7 +33,7 @@ if Version(st.__version__) < Version(MIN_STREAMLIT):
 LAZY_DOWNLOADS = Version(st.__version__) >= Version('1.52')
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
 ROW_LIMITS = [100, 1000, 10000, 'All']
-EDITOR_HEIGHT = 300
+EDITOR_HEIGHT = 250
 
 ss = st.session_state
 
@@ -49,6 +49,8 @@ def set_css_style():
             font-family: "Source Code Pro", monospace !important;
             font-optical-sizing: auto !important;
         }
+        /* Keep the Run row tight under the editor */
+        .st-key-run_row { margin-top: -0.75rem; }
         </style>
         """,
         unsafe_allow_html=True
@@ -67,6 +69,10 @@ def get_report_name():
 
 def get_datamodel_name():
     return _config_default('datamodel_path', '/Custom/py_sql/SampleReport.xdm')
+
+def use_plain_editor():
+    """Hidden fallback: plain_editor = true in config.ini [DEFAULT] swaps the highlighting editor for a text box."""
+    return _config_default('plain_editor', 'false').strip().lower() in ('1', 'true', 'yes')
 
 def get_timeout():
     return (15, int(_config_default('query_timeout_seconds', '600')))
@@ -154,15 +160,6 @@ def close_tab():
     del ss.qtabs[ss.active_tab]
     show_tab(ss.tab_order[min(index, len(ss.tab_order) - 1)])
 
-def editor_mode_changed():
-    # ss.plain_editor already holds the new mode; carry the text over from the old one
-    text = current_sql(plain=not ss.plain_editor)
-    tab = active_tab()
-    tab['sql'] = text
-    tab['version'] += 1
-    ss.sql_editor = text
-
-
 # ---------- Editor callbacks ----------
 
 def format_editor_sql():
@@ -172,15 +169,12 @@ def format_editor_sql():
         flash('warning', 'Formatting needs the sqlparse package: run setup.bat again')
 
 def bind_inputs(sql_text):
-    """Show one input per :bind variable and return {name: value}."""
-    binds = sqltools.find_binds(sql_text)
-    if not binds:
-        return {}
-    st.markdown('**Bind variables** · numbers are sent as-is, other values as quoted text, empty means NULL')
-    columns = st.columns(min(len(binds), 4))
-    for i, name in enumerate(binds):
-        columns[i % len(columns)].text_input(f':{name}', key=f'bind_{name.upper()}')
-    return {name: ss.get(f'bind_{name.upper()}', '') for name in binds}
+    """One small input per :bind variable, shown next to the Run button. Returns {name: value}."""
+    for name in sqltools.find_binds(sql_text):
+        st.markdown(f'`:{name}`', width='content')
+        st.text_input(f':{name}', key=f'bind_{name.upper()}', width=160, label_visibility='collapsed',
+                      placeholder='value', help='Numbers are sent as-is, other text is quoted, empty means NULL')
+    return {name: ss.get(f'bind_{name.upper()}', '') for name in sqltools.find_binds(sql_text)}
 
 def prepare_sql(text, bind_values, row_limit):
     return sqltools.apply_row_limit(sqltools.apply_binds(sqltools.clean_sql(text), bind_values), row_limit)
@@ -380,27 +374,25 @@ def show_results(tab):
     csv_data, info = tab['df'], tab['info']
     message = f"{info['rows']} rows in {info['elapsed']} s on {info['connection']}"
     if info['limit'] and info['rows'] >= info['limit']:
-        message += f" · row limit {info['limit']} reached, choose a higher limit to see more"
-    st.caption(message)
+        message += f" · row limit {info['limit']} reached"
 
-    search = st.text_input('Filter results', key='result_filter', placeholder='Type to show only rows containing this text')
-    view = csv_data
-    if search and len(csv_data):
-        mask = csv_data.astype(str).apply(lambda col: col.str.contains(search, case=False, regex=False)).any(axis=1)
-        view = csv_data[mask]
-        st.caption(f'{len(view)} of {len(csv_data)} rows match')
-    st.dataframe(view, width='stretch')
-
-    # Export files are only built when the button is clicked
     file_base = ''.join(c if c.isalnum() or c in '-_' else '_' for c in tab['title']) or 'query_result'
-    csv_col, xlsx_col, _ = st.columns([1, 1, 4])
-    download_button('⬇ CSV', lambda: view.to_csv(index=False).encode('utf-8'), key='download_csv',
-                    container=csv_col, file_name=f'{file_base}.csv', mime='text/csv', width='stretch')
-    download_button('⬇ Excel', lambda: to_excel_bytes(view), key='download_xlsx', container=xlsx_col,
-                    file_name=f'{file_base}.xlsx',
-                    mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                    width='stretch', disabled=len(view) > 1_048_575,
-                    help='Excel allows at most 1,048,575 data rows')
+    with st.container(horizontal=True, vertical_alignment='center'):
+        st.caption(message, width='content')
+        search = st.text_input('Filter results', key='result_filter', label_visibility='collapsed', width=300,
+                               placeholder='🔍 Filter rows')
+        view = csv_data
+        if search and len(csv_data):
+            mask = csv_data.astype(str).apply(lambda col: col.str.contains(search, case=False, regex=False)).any(axis=1)
+            view = csv_data[mask]
+            st.caption(f'{len(view)} match', width='content')
+        # Export files are only built when the button is clicked
+        download_button('⬇ CSV', lambda: view.to_csv(index=False).encode('utf-8'), key='download_csv',
+                        file_name=f'{file_base}.csv', mime='text/csv')
+        download_button('⬇ Excel', lambda: to_excel_bytes(view), key='download_xlsx', file_name=f'{file_base}.xlsx',
+                        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        disabled=len(view) > 1_048_575, help='Excel allows at most 1,048,575 data rows')
+    st.dataframe(view, width='stretch', height=max(120, min(38 + 35 * len(view), 600)))
 
     with st.expander('SQL sent to the pod'):
         st.code(info['sql'], language='sql')
@@ -440,49 +432,65 @@ def run_active_tab(text, bind_values, row_limit, conn):
 
 # ---------- Compare ----------
 
-def compare_section(sql_text, bind_values, row_limit, conn):
-    connection_name, url, username, password = conn
+def request_compare():
+    ss.compare_requested = ss.get('compare_with')
+
+def compare_popover(connection_name):
     others = [c for c in connections.list_connections() if c != connection_name]
-    with st.expander('⇄ Compare with another connection'):
+    with st.popover('⇄ Compare'):
         if not others:
             st.caption('Save a second connection (for example TEST next to DEV) to compare results')
             return
-        other = st.selectbox(f'Compare {connection_name or "this connection"} with', others, key='compare_with')
+        st.selectbox(f'Compare {connection_name or "this connection"} with', others, key='compare_with')
         st.caption('Runs the query in the editor (with binds and row limit) on both connections and lists rows '
                    'that exist on only one side.')
-        if st.button('Compare'):
-            ss.pop('compare_result', None)
-            if not sqltools.clean_sql(sql_text):
-                st.warning('Enter a query to compare')
-                return
-            sql_to_run = prepare_sql(sql_text, bind_values, row_limit)
-            o_url, o_user, o_pw = connections.get_connection(other)
-            try:
-                with st.spinner(f'Running on {connection_name} and {other}...'):
-                    create_report(o_url, o_user, o_pw, get_datamodel_name(), get_report_name())
-                    a = bip_client.run_query(url, username, password, sql_to_run, get_report_name(), get_timeout())
-                    b = bip_client.run_query(o_url, o_user, o_pw, sql_to_run, get_report_name(), get_timeout())
-                    ss.compare_result = (connection_name, other, compare_frames(a, b, connection_name, other))
-                    del a, b
-            except BipError as e:
-                show_error(str(e), e.detail)
-            except Exception as e:
-                show_error(f'Compare failed: {e}')
+        st.button('Compare', on_click=request_compare, type='primary')
 
-        if 'compare_result' in ss:
-            a_name, b_name, result = ss.compare_result
-            cols = st.columns(4)
-            cols[0].metric(f'Rows on {a_name}', result['rows_a'])
-            cols[1].metric(f'Rows on {b_name}', result['rows_b'])
-            cols[2].metric(f'Only on {a_name}', result['only_a'])
-            cols[3].metric(f'Only on {b_name}', result['only_b'])
-            if result['only_cols_a'] or result['only_cols_b']:
-                st.warning(f"Columns compared: only those in both. Only on {a_name}: {result['only_cols_a']} · "
-                           f"only on {b_name}: {result['only_cols_b']}")
-            if result['only_a'] == 0 and result['only_b'] == 0:
-                st.success('Both connections return the same rows')
-            else:
-                st.dataframe(result['diff'], width='stretch')
+def run_compare(sql_text, bind_values, row_limit, conn):
+    connection_name, url, username, password = conn
+    other = ss.pop('compare_requested', None)
+    if not other:
+        return
+    ss.pop('compare_result', None)
+    if not sqltools.clean_sql(sql_text):
+        st.warning('Enter a query to compare')
+        return
+    sql_to_run = prepare_sql(sql_text, bind_values, row_limit)
+    o_url, o_user, o_pw = connections.get_connection(other)
+    try:
+        with st.spinner(f'Running on {connection_name} and {other}...'):
+            create_report(o_url, o_user, o_pw, get_datamodel_name(), get_report_name())
+            a = bip_client.run_query(url, username, password, sql_to_run, get_report_name(), get_timeout())
+            b = bip_client.run_query(o_url, o_user, o_pw, sql_to_run, get_report_name(), get_timeout())
+            ss.compare_result = (connection_name, other, compare_frames(a, b, connection_name, other))
+            del a, b
+    except BipError as e:
+        show_error(str(e), e.detail)
+    except Exception as e:
+        show_error(f'Compare failed: {e}')
+
+def show_compare_result():
+    if 'compare_result' not in ss:
+        return
+    a_name, b_name, result = ss.compare_result
+    with st.container(border=True):
+        head_col, close_col = st.columns([6, 1], vertical_alignment='center')
+        head_col.markdown(f'**⇄ Compare {a_name} with {b_name}**')
+        if close_col.button('✕ Hide', key='hide_compare', width='stretch'):
+            ss.pop('compare_result', None)
+            st.rerun()
+        cols = st.columns(4)
+        cols[0].metric(f'Rows on {a_name}', result['rows_a'])
+        cols[1].metric(f'Rows on {b_name}', result['rows_b'])
+        cols[2].metric(f'Only on {a_name}', result['only_a'])
+        cols[3].metric(f'Only on {b_name}', result['only_b'])
+        if result['only_cols_a'] or result['only_cols_b']:
+            st.warning(f"Columns compared: only those in both. Only on {a_name}: {result['only_cols_a']} · "
+                       f"only on {b_name}: {result['only_cols_b']}")
+        if result['only_a'] == 0 and result['only_b'] == 0:
+            st.success('Both connections return the same rows')
+        else:
+            st.dataframe(result['diff'], width='stretch')
 
 
 # ---------- Schema browser ----------
@@ -552,15 +560,35 @@ def schema_browser(conn):
 
 # ---------- SQL tab ----------
 
+def save_popover():
+    with st.popover('💾 Save'):
+        st.text_input('Query name (same name overwrites)', key='save_name')
+        folders = [f for f in querystore.list_folders() if f]
+        st.text_input('Folder (optional)', key='save_folder',
+                      help='Existing folders: ' + ', '.join(folders) if folders else None)
+        st.text_input('Tags (optional, comma separated)', key='save_tags')
+        st.button('Save query', on_click=save_current_query, type='primary')
+
+
 def sql_tab(conn):
     connection_name = conn[0]
-    # One button per query tab (buttons keep no state, so renaming a tab can never confuse them)
-    with st.container(horizontal=True, vertical_alignment='center'):
+    # Toolbar: query tabs on the left, query tools on the right
+    tabs_col, tools_col = st.columns([3, 2], vertical_alignment='center')
+    with tabs_col.container(horizontal=True, vertical_alignment='center'):
+        # One button per query tab (buttons keep no state, so renaming a tab can never confuse them)
         for tab_id in ss.tab_order:
             st.button(ss.qtabs[tab_id]['title'], key=f'qtab_{tab_id}', on_click=switch_tab, args=(tab_id,),
                       type='primary' if tab_id == ss.active_tab else 'secondary')
         st.button('＋ New', on_click=add_tab, help='Open a new query tab', key='qtab_new')
         st.button('✕ Close', on_click=close_tab, help='Close this query tab', key='qtab_close')
+    with tools_col.container(horizontal=True, horizontal_alignment='right', vertical_alignment='center'):
+        row_limit = st.selectbox('Row limit', ROW_LIMITS, index=1, key='row_limit', label_visibility='collapsed',
+                                 width=130, format_func=lambda v: f'{v:,} rows' if isinstance(v, int) else 'All rows',
+                                 help='Maximum number of rows the pod sends back')
+        st.button('Format', on_click=format_editor_sql, help='Re-indent the SQL and upper-case keywords')
+        save_popover()
+        compare_popover(connection_name)
+    row_limit = None if row_limit == 'All' else row_limit
     tab = active_tab()
 
     run_requested, run_text = False, None
@@ -579,35 +607,25 @@ def sql_tab(conn):
             run_requested = True
             run_text = value.get('selection') or None
     tab['sql'] = current_sql()
-    bind_values = bind_inputs(tab['sql'])
 
-    run_col, format_col, limit_col, _, mode_col = st.columns([1, 1, 1.5, 2.5, 2], vertical_alignment='bottom')
-    if run_col.button('▶ Run', type='primary', width='stretch'):
-        run_requested = True
-    format_col.button('Format', on_click=format_editor_sql, width='stretch')
-    row_limit = limit_col.selectbox('Row limit', ROW_LIMITS, index=1, key='row_limit')
-    row_limit = None if row_limit == 'All' else row_limit
-    mode_col.toggle('Plain text editor', key='plain_editor', on_change=editor_mode_changed,
-                    help='Switch off the highlighting editor, for example if it does not load')
-
-    with st.expander('💾 Save query'):
-        name_col, folder_col, tags_col = st.columns([2, 1, 1])
-        name_col.text_input('Query name (same name overwrites)', key='save_name')
-        folders = [f for f in querystore.list_folders() if f]
-        folder_col.text_input('Folder (optional)', key='save_folder',
-                              help='Existing folders: ' + ', '.join(folders) if folders else None)
-        tags_col.text_input('Tags (optional, comma separated)', key='save_tags')
-        st.button('Save query', on_click=save_current_query)
-
-    compare_section(tab['sql'], bind_values, row_limit, conn)
+    # Run button right under the editor, bind variables next to it
+    with st.container(horizontal=True, vertical_alignment='center', key='run_row'):
+        if st.button('▶ Run', type='primary', key='run_button',
+                     help='Runs everything in the editor. Ctrl+Enter in the editor runs only the statement under '
+                          'the cursor (blank line or ; separates statements) or the selected text. '
+                          'Ctrl+Space shows suggestions.'):
+            run_requested = True
+        bind_values = bind_inputs(tab['sql'])
 
     if run_requested:
         run_active_tab(run_text or tab['sql'], bind_values, row_limit, conn)
+    run_compare(tab['sql'], bind_values, row_limit, conn)
 
     if tab['error']:
         show_error(*tab['error'])
     elif isinstance(tab['df'], pd.DataFrame):
         show_results(tab)
+    show_compare_result()
 
 
 # Main function
@@ -621,6 +639,7 @@ def main():
         flash('info', f"Moved connections {', '.join(migrated)} out of config.ini into the local database. "
                       'Their passwords are kept in the Windows Credential Manager when it is available.')
     init_tabs()
+    ss.setdefault('plain_editor', use_plain_editor())
 
     conn = connection_sidebar()
     saved_queries_sidebar()

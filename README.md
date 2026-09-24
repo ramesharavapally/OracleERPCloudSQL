@@ -44,11 +44,11 @@ uv run streamlit run app.py
 | Run only part of the text | Select it, then **Ctrl+Enter** |
 | Run everything in the editor | **▶ Run** |
 | Autocomplete | Type 2+ letters or press **Ctrl+Space**: SQL keywords, table/view names (after downloading the object list) and columns of tables used in the query |
-| Bind variables | Write `:p_org_id`; an input box appears. Numbers go in as-is, text is quoted, empty means `NULL` |
-| Row limit | 100 / 1,000 (default) / 10,000 / All. Sent as `FETCH FIRST n ROWS ONLY` |
-| Format | **Format** re-indents each statement and upper-cases keywords |
+| Bind variables | Write `:p_org_id`; a small value box appears next to **▶ Run**. Numbers go in as-is, text is quoted, empty means `NULL` |
+| Row limit | Top right: 100 / 1,000 (default) / 10,000 / All rows. Sent as `FETCH FIRST n ROWS ONLY` |
+| Format | **Format** (top right) re-indents each statement and upper-cases keywords |
 | Several queries at once | **＋ New** opens another query tab, **✕ Close** closes the current one |
-| Fallback | **Plain text editor** switches to a simple text box if the highlighting editor ever fails to load |
+| Fallback | If the highlighting editor ever fails to load, add `plain_editor = true` under `[DEFAULT]` in `cloudsql/config.ini` to use a simple text box |
 
 ### Results
 - Row count and run time, and a notice when the row limit was reached.
@@ -63,13 +63,13 @@ uv run streamlit run app.py
 3. **Insert this SELECT into the editor** writes a `SELECT` with all columns into the current query tab.
 
 ### Saved queries (sidebar)
-- **💾 Save query** under the editor: name, optional **folder** and tags. Same name overwrites.
+- **💾 Save** (top right, above the editor): name, optional **folder** and tags. Same name overwrites.
 - Search by name, tag or SQL text; filter by folder; **Load** into the current tab or **＋Tab** for a new tab.
 - **Import / export saved queries** as a JSON file to share with colleagues.
 - **Recent runs** keeps your last 200 runs to reopen.
 
 ### Compare two connections
-**⇄ Compare with another connection** runs the query in the editor on two pods (for example DEV and TEST). It shows the row counts and lists the rows found on only one side.
+**⇄ Compare** (top right, above the editor) runs the query in the editor on two pods (for example DEV and TEST). The result appears under the query results with the row counts and the rows found on only one side.
 
 ---
 
