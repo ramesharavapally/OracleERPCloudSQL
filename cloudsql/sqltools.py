@@ -65,5 +65,7 @@ def apply_row_limit(sql, limit):
 
 
 def format_sql(sql):
+    """Format each statement (blocks separated by blank lines) on its own, keeping the blank lines."""
     import sqlparse  # imported only when the Format button is used
-    return sqlparse.format(sql, reindent=True, keyword_case='upper')
+    blocks = [b for b in re.split(r'\n[ \t]*\n', sql) if b.strip()]
+    return '\n\n'.join(sqlparse.format(b.strip(), reindent=True, keyword_case='upper') for b in blocks)

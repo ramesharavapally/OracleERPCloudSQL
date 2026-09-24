@@ -1,164 +1,164 @@
-import streamlit as st
-import requests
-import base64
-import pandas as pd
-from io import BytesIO
 import configparser
 import os
 import time
-from reportutils import create_report
+from io import BytesIO
+
+import pandas as pd
+import streamlit as st
+
+import bip_client
+import connections
+import metadata
 import querystore
 import sqltools
-
-ROW_LIMITS = [100, 1000, 10000, 'All']
+from bip_client import BipError
+from compare import compare_frames
+from components.sql_editor import sql_editor
+from reportutils import create_report
 
 # Set page configuration to wide mode by default
 st.set_page_config(layout="wide" ,
                    page_title="Cloud SQL",
                    page_icon="🌊",)
-CONFIG_FILE = 'config.ini'
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
+ROW_LIMITS = [100, 1000, 10000, 'All']
+EDITOR_HEIGHT = 300
+
+ss = st.session_state
+
 
 def set_css_style():
     st.markdown(
         """
-        <style>                
+        <style>
         /* Define custom font size and family */
         textarea {
-            color: rgb(0, 0, 139) !important;                    
+            color: rgb(0, 0, 139) !important;
             font-size: 14px !important;
             font-family: "Source Code Pro", monospace !important;
-            font-optical-sizing: auto !important;            
-        }                
+            font-optical-sizing: auto !important;
+        }
         </style>
         """,
         unsafe_allow_html=True
     )
 
-def get_report_name():
+
+# ---------- Settings from config.ini (report paths, timeout) ----------
+
+def _config_default(key, fallback):
     config = configparser.ConfigParser()
     config.read(CONFIG_FILE)
-    return config['DEFAULT']['report_path']
+    return config['DEFAULT'].get(key, fallback)
+
+def get_report_name():
+    return _config_default('report_path', '/Custom/py_sql/SampleReport.xdo')
 
 def get_datamodel_name():
-    config = configparser.ConfigParser()
-    config.read(CONFIG_FILE)
-    return config['DEFAULT']['datamodel_path']
+    return _config_default('datamodel_path', '/Custom/py_sql/SampleReport.xdm')
 
-# Function to save or update connection details to a properties file
-def save_or_update_connection_details(url, username, password, connection_name):
-    config = configparser.ConfigParser()
-    config.read(CONFIG_FILE)
+def get_timeout():
+    return (15, int(_config_default('query_timeout_seconds', '600')))
 
-    if connection_name in config:
-        # Update existing connection details
-        config[connection_name] = {'url': url, 'username': username, 'password': password}
-        st.sidebar.success(f"Updated connection details for {connection_name}")
-    else:
-        # Save new connection details
-        config[connection_name] = {'url': url, 'username': username, 'password': password}
-        st.sidebar.success(f"Created new connection: {connection_name}")
 
-    with open(CONFIG_FILE, 'w') as configfile:
-        config.write(configfile)
-    
-    # Refresh the list of saved connections and select the newly created connection    
-    # st.experimental_rerun()
+# ---------- Messages that survive a rerun ----------
 
-# Function to load saved connections from the properties file
-def load_saved_connections():
-    config = configparser.ConfigParser()
-    config.read(CONFIG_FILE)    
-    return config.sections()
+def flash(level, message):
+    ss.setdefault('flashes', []).append((level, message))
 
-# Function to get connection details based on the selected connection
-def get_connection_details(connection_name):
-    config = configparser.ConfigParser()
-    config.read(CONFIG_FILE)
-    return config[connection_name]['url'], config[connection_name]['username'], config[connection_name]['password']
+def show_flashes():
+    for level, message in ss.pop('flashes', []):
+        getattr(st, level)(message)
 
-# Function to invoke SOAP API
-# @st.cache_data
-def invoke_soap_api(payload , url , username , password):
-    # Define the URL of the SOAP API endpoint
-    url = f'{url}/xmlpserver/services/ExternalReportWSSService?WSDL'
-    USERNAME = username
-    PASSWORD = password
+def show_error(message, detail=''):
+    st.error(message)
+    if detail and detail != message:
+        with st.expander('Error details'):
+            st.code(detail[:20000])
 
-    # Define headers for the SOAP request
-    headers = {'Content-Type': 'application/soap+xml'}
 
-    # Make the POST request to invoke the SOAP API
-    response = requests.request(method='POST', url=url, data=payload, headers=headers, auth=(USERNAME, PASSWORD))
-    
+# ---------- Query tabs ----------
 
-    # Check if the request was successful
-    if response.status_code == 200:
-        return response
-    else:
-        st.session_state.csv_data = ""
-        st.error(f"Failed to invoke SOAP API. Status code: {response.status_code} {response.text}")
+def new_tab_state(tab_id, title=None):
+    return {'title': title or f'Query {tab_id}', 'sql': '', 'version': 0, 'df': None, 'info': {}, 'error': None}
 
-# Function to extract report bytes
-def extract_report_bytes(response_text):
-    start_tag = "<ns2:reportBytes>"
-    end_tag = "</ns2:reportBytes>"
-    start_index = response_text.find(start_tag)
-    end_index = response_text.find(end_tag)
-    if start_index != -1 and end_index != -1:
-        return response_text[start_index + len(start_tag):end_index].strip()
-    else:
-        return None
+def init_tabs():
+    if 'qtabs' not in ss:
+        ss.qtabs = {1: new_tab_state(1)}
+        ss.tab_order = [1]
+        ss.active_tab = 1
+        ss.next_tab = 2
 
-# Function to decode base64 into a DataFrame
-def decode_base64_to_dataframe(base64_data):    
-    # Decode base64 data
-    decoded_data = base64.b64decode(base64_data)
+def active_tab():
+    return ss.qtabs[ss.active_tab]
 
-    # Read the decoded data as CSV
-    return pd.read_csv(BytesIO(decoded_data))
+def current_sql(plain=None):
+    """Text currently in the editor of the active tab."""
+    tab = active_tab()
+    plain = ss.get('plain_editor', False) if plain is None else plain
+    if plain:
+        return ss.get('sql_editor', tab['sql'])
+    value = ss.get('ace_editor')
+    if value and value.get('version') == tab['version'] and value.get('tab') == ss.active_tab:
+        return value.get('text', '')
+    return tab['sql']
 
-def to_excel_bytes(df):
-    buffer = BytesIO()
-    df.to_excel(buffer, index=False, engine='openpyxl')
-    return buffer.getvalue()
+def set_editor_text(text, title=None):
+    """Put new text in the active tab's editor. Only call from widget callbacks."""
+    tab = active_tab()
+    tab['sql'] = text
+    tab['version'] += 1
+    ss.sql_editor = text
+    if title:
+        tab['title'] = title
 
-# Plain dataframe grid: a pandas Styler renders every cell to HTML and uses far more memory
-def show_results(csv_data):
-    info = st.session_state.get('run_info', {})
-    if info:
-        message = f"{info['rows']} rows in {info['elapsed']} s"
-        if info['limit'] and info['rows'] >= info['limit']:
-            message += f" · row limit {info['limit']} reached, choose a higher limit to see more"
-        st.caption(message)
+def show_tab(tab_id):
+    ss.active_tab = tab_id
+    tab = active_tab()
+    ss.sql_editor = tab['sql']
+    ss.save_name = tab.get('saved_name', '')
 
-    search = st.text_input('Filter results', key='result_filter', placeholder='Type to show only rows containing this text')
-    view = csv_data
-    if search:
-        mask = csv_data.astype(str).apply(lambda col: col.str.contains(search, case=False, regex=False)).any(axis=1)
-        view = csv_data[mask]
-        st.caption(f'{len(view)} of {len(csv_data)} rows match')
-    st.dataframe(view, width='stretch')
+def switch_tab(tab_id):
+    if tab_id != ss.active_tab:
+        active_tab()['sql'] = current_sql()
+        show_tab(tab_id)
 
-    # Export files are only built when the button is clicked
-    csv_col, xlsx_col, _ = st.columns([1, 1, 4])
-    csv_col.download_button('⬇ CSV', data=lambda: view.to_csv(index=False).encode('utf-8'),
-                            file_name='query_result.csv', mime='text/csv', width='stretch')
-    xlsx_col.download_button('⬇ Excel', data=lambda: to_excel_bytes(view), file_name='query_result.xlsx',
-                             mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                             width='stretch', disabled=len(view) > 1_048_575,
-                             help='Excel allows at most 1,048,575 data rows')
+def add_tab():
+    active_tab()['sql'] = current_sql()
+    tab_id = ss.next_tab
+    ss.next_tab += 1
+    ss.qtabs[tab_id] = new_tab_state(tab_id)
+    ss.tab_order.append(tab_id)
+    show_tab(tab_id)
 
-    if info.get('sql'):
-        with st.expander('SQL sent to the pod'):
-            st.code(info['sql'], language='sql')
+def close_tab():
+    if len(ss.tab_order) == 1:
+        tab_id = ss.active_tab
+        ss.qtabs[tab_id] = new_tab_state(tab_id, 'Query 1')
+        ss.qtabs[tab_id]['version'] = 1
+        show_tab(tab_id)
+        return
+    index = ss.tab_order.index(ss.active_tab)
+    ss.tab_order.remove(ss.active_tab)
+    del ss.qtabs[ss.active_tab]
+    show_tab(ss.tab_order[min(index, len(ss.tab_order) - 1)])
+
+def editor_mode_changed():
+    # ss.plain_editor already holds the new mode; carry the text over from the old one
+    text = current_sql(plain=not ss.plain_editor)
+    tab = active_tab()
+    tab['sql'] = text
+    tab['version'] += 1
+    ss.sql_editor = text
+
 
 # ---------- Editor callbacks ----------
 
 def format_editor_sql():
     try:
-        st.session_state.sql_editor = sqltools.format_sql(st.session_state.get('sql_editor', ''))
+        set_editor_text(sqltools.format_sql(current_sql()))
     except ImportError:
-        st.session_state.flash = ('warning', 'Formatting needs the sqlparse package: run setup.bat again')
+        flash('warning', 'Formatting needs the sqlparse package: run setup.bat again')
 
 def bind_inputs(sql_text):
     """Show one input per :bind variable and return {name: value}."""
@@ -169,191 +169,442 @@ def bind_inputs(sql_text):
     columns = st.columns(min(len(binds), 4))
     for i, name in enumerate(binds):
         columns[i % len(columns)].text_input(f':{name}', key=f'bind_{name.upper()}')
-    return {name: st.session_state.get(f'bind_{name.upper()}', '') for name in binds}
+    return {name: ss.get(f'bind_{name.upper()}', '') for name in binds}
 
-# ---------- Saved query / history callbacks (run before the page re-renders) ----------
+def prepare_sql(text, bind_values, row_limit):
+    return sqltools.apply_row_limit(sqltools.apply_binds(sqltools.clean_sql(text), bind_values), row_limit)
 
-def load_into_editor(sql_text, name=None):
-    st.session_state.sql_editor = sql_text
-    if name:
-        st.session_state.save_name = name
+
+# ---------- Saved queries / history callbacks ----------
 
 def load_saved_query():
-    sql_text, tags = querystore.get_query(st.session_state.sq_pick)
+    sql_text, tags, folder = querystore.get_query(ss.sq_pick)
     if sql_text is not None:
-        load_into_editor(sql_text, st.session_state.sq_pick)
-        st.session_state.save_tags = tags or ''
+        set_editor_text(sql_text, title=ss.sq_pick)
+        active_tab()['saved_name'] = ss.sq_pick
+        ss.save_name = ss.sq_pick
+        ss.save_tags = tags or ''
+        ss.save_folder = folder or ''
+
+def load_saved_query_new_tab():
+    add_tab()
+    load_saved_query()
 
 def delete_saved_query():
-    querystore.delete_query(st.session_state.sq_pick)
-    st.session_state.flash = ('success', f"Deleted saved query '{st.session_state.sq_pick}'")
+    querystore.delete_query(ss.sq_pick)
+    flash('success', f"Deleted saved query '{ss.sq_pick}'")
 
 def save_current_query():
-    name = st.session_state.get('save_name', '').strip()
-    sql_text = st.session_state.get('sql_editor', '').strip()
+    name = ss.get('save_name', '').strip()
+    sql_text = current_sql().strip()
     if not name or not sql_text:
-        st.session_state.flash = ('warning', 'Enter a query name and some SQL before saving')
+        flash('warning', 'Enter a query name and some SQL before saving')
         return
-    updated = querystore.save_query(name, sql_text, st.session_state.get('save_tags', '').strip())
-    st.session_state.flash = ('success', f"{'Updated' if updated else 'Saved'} query '{name}'")
+    updated = querystore.save_query(name, sql_text, ss.get('save_tags', '').strip(), ss.get('save_folder', '').strip())
+    tab = active_tab()
+    tab['title'] = name
+    tab['saved_name'] = name
+    flash('success', f"{'Updated' if updated else 'Saved'} query '{name}'")
 
 def load_history_query():
-    load_into_editor(st.session_state.hist_pick[1])
+    sql_text = querystore.get_history_sql(ss.get('hist_pick'))
+    if sql_text is not None:
+        set_editor_text(sql_text)
+
+def load_last_query(connection_name):
+    set_editor_text(connections.get_last_sql(connection_name))
+
+def import_queries():
+    uploaded = ss.get('import_file')
+    if uploaded is None:
+        flash('warning', 'Choose a JSON file to import first')
+        return
+    try:
+        added, updated, skipped = querystore.import_queries_json(uploaded.getvalue().decode('utf-8'),
+                                                                 overwrite=ss.get('import_overwrite', False))
+        flash('success', f'Imported: {added} new, {updated} overwritten, {skipped} skipped')
+    except Exception as e:
+        flash('error', f'Could not import the file: {e}')
+
+
+# ---------- Connections ----------
+
+def save_connection_clicked(key):
+    name = ss.get(f'conn_name_{key}', '').strip()
+    url = ss.get(f'conn_url_{key}', '').strip()
+    username = ss.get(f'conn_user_{key}', '').strip()
+    password = ss.get(f'conn_pw_{key}', '')
+    if not (name and url and username and password):
+        flash('warning', 'Fill in connection name, URL, username and password')
+        return
+    in_keyring = connections.save_connection(name, url, username, password)
+    flash('success', f'Saved connection {name}')
+    if not in_keyring:
+        flash('warning', 'No credential store was available, so the password is kept in the local database file')
+    try:
+        create_report(url.rstrip('/'), username, password, get_datamodel_name(), get_report_name())
+    except Exception as e:
+        flash('error', f'Connection saved, but the report could not be created: {e}')
+    ss.conn_pick = name
+    ss.selected_connection = name
+
+def delete_connection_clicked(name):
+    connections.delete_connection(name)
+    metadata.forget(name)
+    ss.selected_connection = ''
+    ss.pop('conn_pick', None)
+    flash('success', f'Deleted connection {name}')
+
+def connection_sidebar():
+    """Returns (connection_name, url, username, password) of the connection to use."""
+    saved = connections.list_connections()
+    if ss.get('conn_pick') not in saved:
+        ss.pop('conn_pick', None)
+    selected = st.sidebar.selectbox('Select Connection:', saved, key='conn_pick')
+    url, username, password = connections.get_connection(selected) if selected else ('', '', '')
+
+    ss.setdefault('selected_connection', '')
+    if selected and selected != ss.selected_connection:
+        try:
+            create_report(url, username, password, get_datamodel_name(), get_report_name())
+        except Exception as e:
+            st.sidebar.error(f'Could not check or create the report on {selected}: {e}')
+        ss.selected_connection = selected
+
+    with st.sidebar.expander('Connection settings', expanded=not saved):
+        key = selected or 'new'
+        name = st.text_input('Connection Name', value=selected or '', key=f'conn_name_{key}')
+        url = st.text_input('API URL', value=url, key=f'conn_url_{key}', placeholder='https://xxxx.fa.ocs.oraclecloud.com')
+        username = st.text_input('Username', value=username, key=f'conn_user_{key}')
+        password = st.text_input('Password', type='password', value=password, key=f'conn_pw_{key}')
+        st.button('Save', on_click=save_connection_clicked, args=(key,), width='stretch')
+        if selected:
+            if connections.password_in_keyring(selected):
+                st.caption('🔒 Password is kept in the Windows Credential Manager')
+            else:
+                st.caption('⚠ Password is kept in the local database file (no credential store available)')
+            confirm = st.checkbox(f'Yes, delete {selected}', key=f'confirm_delete_{selected}')
+            st.button('Delete connection', on_click=delete_connection_clicked, args=(selected,),
+                      disabled=not confirm, width='stretch')
+
+    if selected and connections.get_last_sql(selected):
+        st.sidebar.button(f'↩ Last query run on {selected}', on_click=load_last_query, args=(selected,),
+                          width='stretch')
+    return (name.strip() if name else ''), url.strip().rstrip('/'), username.strip(), password
+
+
+# ---------- Sidebar: saved queries and history ----------
 
 def saved_queries_sidebar():
     st.sidebar.divider()
     st.sidebar.subheader('Saved Queries')
+    folders = querystore.list_folders()
+    folder_filter = None
+    if len(folders) > 1 or (folders and folders[0]):
+        choice = st.sidebar.selectbox('Folder', ['All folders'] + folders, key='sq_folder',
+                                      format_func=lambda f: f or '(no folder)')
+        folder_filter = None if choice == 'All folders' else choice
     search = st.sidebar.text_input('Search name / tag / SQL', key='sq_search')
-    names = [row[0] for row in querystore.list_queries(search)]
-    if not names:
-        st.sidebar.caption('No saved queries yet')
+    rows = querystore.list_queries(search, folder_filter)
+    if not rows:
+        st.sidebar.caption('No saved queries yet' if not search else 'No saved query matches')
     else:
+        names = [row[0] for row in rows]
         picked = st.sidebar.selectbox('Query', names, key='sq_pick')
-        sql_text, tags = querystore.get_query(picked)
-        if tags:
-            st.sidebar.caption(f'Tags: {tags}')
+        sql_text, tags, folder = querystore.get_query(picked)
+        details = ' · '.join(x for x in (f'Folder: {folder}' if folder else '', f'Tags: {tags}' if tags else '') if x)
+        if details:
+            st.sidebar.caption(details)
         st.sidebar.code(sql_text if len(sql_text) <= 400 else sql_text[:400] + ' ...', language='sql')
-        load_col, delete_col = st.sidebar.columns(2)
-        load_col.button('Load', on_click=load_saved_query, width='stretch')
+        load_col, new_col, delete_col = st.sidebar.columns(3)
+        load_col.button('Load', on_click=load_saved_query, width='stretch', help='Load into the current tab')
+        new_col.button('＋Tab', on_click=load_saved_query_new_tab, width='stretch', help='Open in a new query tab')
         delete_col.button('Delete', on_click=delete_saved_query, width='stretch')
+
+    with st.sidebar.expander('Import / export saved queries'):
+        st.download_button('⬇ Export all to JSON', data=lambda: querystore.export_queries_json().encode('utf-8'),
+                           file_name='cloudsql_saved_queries.json', mime='application/json', width='stretch')
+        st.file_uploader('Import from JSON', type=['json'], key='import_file')
+        st.checkbox('Overwrite queries with the same name', key='import_overwrite')
+        st.button('Import', on_click=import_queries, width='stretch')
 
     with st.sidebar.expander('Recent runs'):
         history = querystore.list_history(30)
         if not history:
             st.caption('No queries run yet')
         else:
-            st.selectbox('Run', history, key='hist_pick',
-                         format_func=lambda h: f"{h[6]} | {h[3]} | {' '.join(h[1].split())[:50]}")
+            labels = {h[0]: f"{h[6]} | {h[2]} | {h[3]} | {' '.join(h[1].split())[:50]}" for h in history}
+            st.selectbox('Run', list(labels), key='hist_pick', format_func=labels.get)
             st.button('Load into editor', on_click=load_history_query)
 
-# Main function
-def main():
-    # Input fields for selecting saved connections    
-    set_css_style()
-    querystore.init_db()
-    saved_connections = load_saved_connections()    
-    selected_connection = st.sidebar.selectbox('Select Connection:', saved_connections)
-    connection_name = selected_connection
 
-    # Get connection details based on the selected connection
-    if 'selected_connection' not in st.session_state:
-        st.session_state.selected_connection = ""
-        
-    if selected_connection:        
-        url, username, password  = get_connection_details(selected_connection) 
-        if selected_connection != st.session_state.selected_connection :  
-            try:          
-                create_report(url , username , password , get_datamodel_name() , get_report_name())
+# ---------- Results ----------
+
+def to_excel_bytes(df):
+    buffer = BytesIO()
+    df.to_excel(buffer, index=False, engine='openpyxl')
+    return buffer.getvalue()
+
+# Plain dataframe grid: a pandas Styler renders every cell to HTML and uses far more memory
+def show_results(tab):
+    csv_data, info = tab['df'], tab['info']
+    message = f"{info['rows']} rows in {info['elapsed']} s on {info['connection']}"
+    if info['limit'] and info['rows'] >= info['limit']:
+        message += f" · row limit {info['limit']} reached, choose a higher limit to see more"
+    st.caption(message)
+
+    search = st.text_input('Filter results', key='result_filter', placeholder='Type to show only rows containing this text')
+    view = csv_data
+    if search and len(csv_data):
+        mask = csv_data.astype(str).apply(lambda col: col.str.contains(search, case=False, regex=False)).any(axis=1)
+        view = csv_data[mask]
+        st.caption(f'{len(view)} of {len(csv_data)} rows match')
+    st.dataframe(view, width='stretch')
+
+    # Export files are only built when the button is clicked
+    file_base = ''.join(c if c.isalnum() or c in '-_' else '_' for c in tab['title']) or 'query_result'
+    csv_col, xlsx_col, _ = st.columns([1, 1, 4])
+    csv_col.download_button('⬇ CSV', data=lambda: view.to_csv(index=False).encode('utf-8'),
+                            file_name=f'{file_base}.csv', mime='text/csv', width='stretch')
+    xlsx_col.download_button('⬇ Excel', data=lambda: to_excel_bytes(view), file_name=f'{file_base}.xlsx',
+                             mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                             width='stretch', disabled=len(view) > 1_048_575,
+                             help='Excel allows at most 1,048,575 data rows')
+
+    with st.expander('SQL sent to the pod'):
+        st.code(info['sql'], language='sql')
+
+
+def run_active_tab(text, bind_values, row_limit, conn):
+    connection_name, url, username, password = conn
+    tab = active_tab()
+    if not sqltools.clean_sql(text):
+        tab['error'] = ('Enter a query to run', '')
+        return
+    if not (url and username and password):
+        tab['error'] = ('Select or save a connection first', '')
+        return
+    sql_to_run = prepare_sql(text, bind_values, row_limit)
+    # Free the previous result before fetching the new one
+    tab['df'], tab['error'] = None, None
+    started = time.perf_counter()
+    try:
+        with st.spinner(f'Running on {connection_name}...'):
+            df = bip_client.run_query(url, username, password, sql_to_run, get_report_name(), get_timeout())
+    except BipError as e:
+        querystore.add_history(text, connection_name, 'error')
+        tab['error'] = (str(e), e.detail)
+        return
+    except Exception as e:
+        querystore.add_history(text, connection_name, 'error')
+        tab['error'] = (f'Could not read the query result: {e}', '')
+        return
+    elapsed = round(time.perf_counter() - started, 2)
+    querystore.add_history(text, connection_name, 'ok', len(df), elapsed)
+    connections.set_last_sql(connection_name, text)
+    tab['df'] = df
+    tab['info'] = {'rows': len(df), 'elapsed': elapsed, 'limit': row_limit, 'sql': sql_to_run,
+                   'connection': connection_name}
+
+
+# ---------- Compare ----------
+
+def compare_section(sql_text, bind_values, row_limit, conn):
+    connection_name, url, username, password = conn
+    others = [c for c in connections.list_connections() if c != connection_name]
+    with st.expander('⇄ Compare with another connection'):
+        if not others:
+            st.caption('Save a second connection (for example TEST next to DEV) to compare results')
+            return
+        other = st.selectbox(f'Compare {connection_name or "this connection"} with', others, key='compare_with')
+        st.caption('Runs the query in the editor (with binds and row limit) on both connections and lists rows '
+                   'that exist on only one side.')
+        if st.button('Compare'):
+            ss.pop('compare_result', None)
+            if not sqltools.clean_sql(sql_text):
+                st.warning('Enter a query to compare')
+                return
+            sql_to_run = prepare_sql(sql_text, bind_values, row_limit)
+            o_url, o_user, o_pw = connections.get_connection(other)
+            try:
+                with st.spinner(f'Running on {connection_name} and {other}...'):
+                    create_report(o_url, o_user, o_pw, get_datamodel_name(), get_report_name())
+                    a = bip_client.run_query(url, username, password, sql_to_run, get_report_name(), get_timeout())
+                    b = bip_client.run_query(o_url, o_user, o_pw, sql_to_run, get_report_name(), get_timeout())
+                    ss.compare_result = (connection_name, other, compare_frames(a, b, connection_name, other))
+                    del a, b
+            except BipError as e:
+                show_error(str(e), e.detail)
             except Exception as e:
-                st.error(f"Error occured while creating DM {e}")
-        st.session_state.selected_connection = selected_connection
+                show_error(f'Compare failed: {e}')
+
+        if 'compare_result' in ss:
+            a_name, b_name, result = ss.compare_result
+            cols = st.columns(4)
+            cols[0].metric(f'Rows on {a_name}', result['rows_a'])
+            cols[1].metric(f'Rows on {b_name}', result['rows_b'])
+            cols[2].metric(f'Only on {a_name}', result['only_a'])
+            cols[3].metric(f'Only on {b_name}', result['only_b'])
+            if result['only_cols_a'] or result['only_cols_b']:
+                st.warning(f"Columns compared: only those in both. Only on {a_name}: {result['only_cols_a']} · "
+                           f"only on {b_name}: {result['only_cols_b']}")
+            if result['only_a'] == 0 and result['only_b'] == 0:
+                st.success('Both connections return the same rows')
+            else:
+                st.dataframe(result['diff'], width='stretch')
+
+
+# ---------- Schema browser ----------
+
+def insert_select(statement):
+    text = current_sql()
+    set_editor_text((text.rstrip() + '\n\n' if text.strip() else '') + statement)
+    flash('success', f"Added to {active_tab()['title']}. Open the SQL tab to see it")
+
+def schema_browser(conn):
+    connection_name, url, username, password = conn
+    if not (connection_name and url and username and password):
+        st.info('Select or save a connection first')
+        return
+
+    def run_sql(sql):
+        return bip_client.run_query(url, username, password, sql, get_report_name(), get_timeout())
+
+    status = metadata.object_status(connection_name)
+    info_col, button_col = st.columns([3, 1], vertical_alignment='center')
+    if status:
+        info_col.caption(f'{status[0]:,} tables and views of {connection_name} cached locally '
+                         f'(downloaded {status[1]}). They also feed the editor autocomplete.')
     else:
-        url, username, password , connection_name= '', '', '' ,''        
-
-    # Input fields for URL, username, and password
-    connection_name = st.sidebar.text_input('Connection Name', value=connection_name)
-    url_input = st.sidebar.text_input('API URL', value=url)
-    username_input = st.sidebar.text_input('Username', value=username)
-    password_input = st.sidebar.text_input('Password', type='password', value=password)
-
-    # Save button to store or update connection details
-    if st.sidebar.button('Save'):
-        save_or_update_connection_details(url_input, username_input, password_input, connection_name)        
-        try:            
-            create_report(url_input , username_input , password_input , get_datamodel_name() , get_report_name())
+        info_col.info('Download the list of tables and views once. Searching is then instant and works offline, '
+                      'and the editor can autocomplete table names.')
+    if button_col.button('↻ Refresh object list' if status else '⬇ Download object list', width='stretch'):
+        count = None
+        try:
+            with st.spinner('Downloading table and view names... this can take a minute on a big pod'):
+                count = metadata.refresh_objects(connection_name, run_sql)
+        except BipError as e:
+            show_error(str(e), e.detail)
         except Exception as e:
-            st.error(f"Error occured while creating DM in Save  {e}")
-                        
-        st.session_state.selected_connection = selected_connection
+            show_error(f'Could not download the object list: {e}')
+        if count is not None:
+            flash('success', f'Cached {count:,} tables and views')
+            st.rerun()
 
-    saved_queries_sidebar()
+    search = st.text_input('Search tables and views', key='schema_search', placeholder='e.g. PO_HEADERS')
+    if not search.strip():
+        return
+    results = metadata.search_objects(connection_name, search)
+    if not results:
+        st.caption('Nothing found in the local list.' + ('' if status else ' Download the object list first.'))
+        return
+    if len(results) == 200:
+        st.caption('Showing the first 200 matches, type more to narrow down')
+    by_key = {f'{r[0]}.{r[1]}': r for r in results}
+    labels = {k: f'{r[1]}  ·  {r[0]}  ·  {r[2]}' for k, r in by_key.items()}
+    picked = st.selectbox('Object', list(by_key), key='schema_pick', format_func=labels.get)
+    owner, table, object_type = by_key.get(picked, results[0])
 
-    st.write(f'Connection name : {connection_name}')
-    if 'flash' in st.session_state:
-        level, message = st.session_state.pop('flash')
-        getattr(st, level)(message)
+    refresh = st.button('↻ Refresh columns', help='Columns are cached after the first look-up')
+    try:
+        with st.spinner(f'Fetching columns of {table}...'):
+            columns = metadata.get_columns(connection_name, owner, table, run_sql, refresh=refresh)
+    except BipError as e:
+        show_error(str(e), e.detail)
+        return
+    st.dataframe(pd.DataFrame(columns, columns=['Column', 'Type', 'Nullable', '#']), hide_index=True,
+                 width='stretch', height=min(38 + 35 * len(columns), 420))
+    statement = metadata.select_statement(owner, table, columns)
+    st.code(statement, language='sql')
+    st.button('Insert this SELECT into the editor', on_click=insert_select, args=(statement,), type='primary')
 
-    # Input field for user to enter data
-    user_input = st.text_area('Enter valid query', height=250, key='sql_editor')
-    bind_values = bind_inputs(user_input)
 
-    run_col, format_col, limit_col, _ = st.columns([1, 1, 1.5, 4], vertical_alignment='bottom')
-    submit = run_col.button('▶ Run', type='primary', width='stretch')
+# ---------- SQL tab ----------
+
+def sql_tab(conn):
+    connection_name = conn[0]
+    # One button per query tab (buttons keep no state, so renaming a tab can never confuse them)
+    with st.container(horizontal=True, vertical_alignment='center'):
+        for tab_id in ss.tab_order:
+            st.button(ss.qtabs[tab_id]['title'], key=f'qtab_{tab_id}', on_click=switch_tab, args=(tab_id,),
+                      type='primary' if tab_id == ss.active_tab else 'secondary')
+        st.button('＋ New', on_click=add_tab, help='Open a new query tab', key='qtab_new')
+        st.button('✕ Close', on_click=close_tab, help='Close this query tab', key='qtab_close')
+    tab = active_tab()
+
+    run_requested, run_text = False, None
+    if ss.get('plain_editor', False):
+        ss.setdefault('sql_editor', tab['sql'])
+        st.text_area('Enter valid query', height=EDITOR_HEIGHT, key='sql_editor', label_visibility='collapsed')
+    else:
+        value = sql_editor(tab['sql'], tab['version'], ss.active_tab,
+                           words_url=metadata.words_url(connection_name) if connection_name else None,
+                           extra_words=metadata.known_columns(connection_name, tab['sql']) if connection_name else [],
+                           height=EDITOR_HEIGHT, key='ace_editor')
+        # Ctrl+Enter in the editor runs the query (or the selected part of it) once
+        if value and value.get('run') and value.get('tab') == ss.active_tab \
+                and value.get('version') == tab['version'] and value.get('nonce') != ss.get('last_nonce'):
+            ss.last_nonce = value['nonce']
+            run_requested = True
+            run_text = value.get('selection') or None
+    tab['sql'] = current_sql()
+    bind_values = bind_inputs(tab['sql'])
+
+    run_col, format_col, limit_col, _, mode_col = st.columns([1, 1, 1.5, 2.5, 2], vertical_alignment='bottom')
+    if run_col.button('▶ Run', type='primary', width='stretch'):
+        run_requested = True
     format_col.button('Format', on_click=format_editor_sql, width='stretch')
     row_limit = limit_col.selectbox('Row limit', ROW_LIMITS, index=1, key='row_limit')
     row_limit = None if row_limit == 'All' else row_limit
+    mode_col.toggle('Plain text editor', key='plain_editor', on_change=editor_mode_changed,
+                    help='Switch off the highlighting editor, for example if it does not load')
 
     with st.expander('💾 Save query'):
-        name_col, tags_col = st.columns([2, 1])
+        name_col, folder_col, tags_col = st.columns([2, 1, 1])
         name_col.text_input('Query name (same name overwrites)', key='save_name')
+        folders = [f for f in querystore.list_folders() if f]
+        folder_col.text_input('Folder (optional)', key='save_folder',
+                              help='Existing folders: ' + ', '.join(folders) if folders else None)
         tags_col.text_input('Tags (optional, comma separated)', key='save_tags')
         st.button('Save query', on_click=save_current_query)
 
-    # Button to submit the input data
-    if submit and not sqltools.clean_sql(user_input):
-        st.warning('Enter a query to run')
-    elif submit:                
-        started = time.perf_counter()
-        sql_to_run = sqltools.apply_row_limit(
-            sqltools.apply_binds(sqltools.clean_sql(user_input), bind_values), row_limit)
-        # Convert user input to base64
-        base64_input = base64.b64encode(sql_to_run.encode()).decode()
+    compare_section(tab['sql'], bind_values, row_limit, conn)
 
-        # Construct the SOAP request payload with the base64 input
-        soap_payload = f"""
-        <soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:pub="http://xmlns.oracle.com/oxp/service/PublicReportService">
-           <soap:Header/>
-           <soap:Body>
-              <pub:runReport>
-                 <pub:reportRequest>
-                    <pub:attributeFormat>csv</pub:attributeFormat>
-                    <pub:flattenXML>false</pub:flattenXML>
-                    <pub:parameterNameValues>
-                       <pub:item>
-                          <pub:name>query1</pub:name>
-                          <pub:values>
-                             <pub:item>{base64_input}</pub:item>
-                          </pub:values>
-                       </pub:item>
-                    </pub:parameterNameValues>
-                    <pub:reportAbsolutePath>{get_report_name()}</pub:reportAbsolutePath>
-                    <pub:sizeOfDataChunkDownload>-1</pub:sizeOfDataChunkDownload>
-                 </pub:reportRequest>
-              </pub:runReport>
-           </soap:Body>
-        </soap:Envelope>
-        """
+    if run_requested:
+        run_active_tab(run_text or tab['sql'], bind_values, row_limit, conn)
 
-        # Invoke the SOAP API with the constructed payload
-        api_response = invoke_soap_api(soap_payload , url_input , username_input , password_input)
-        if api_response:
-            report_bytes = extract_report_bytes(str(api_response.text))
-            # Replace None values with 'null' for better display
-            report_bytes = report_bytes if report_bytes is not None else 'null'
-            # Decode base64 response and display CSV data
-            try:
-                # Free the previous result before building the new one
-                st.session_state.csv_data = ""
-                csv_data = decode_base64_to_dataframe(report_bytes)
-            except Exception as e:
-                querystore.add_history(user_input, connection_name, 'error')
-                st.error(f"Could not read the query result: {e}")
-            else:
-                elapsed = round(time.perf_counter() - started, 2)
-                querystore.add_history(user_input, connection_name, 'ok', len(csv_data), elapsed)
-                st.session_state.csv_data = csv_data
-                st.session_state.run_info = {'rows': len(csv_data), 'elapsed': elapsed,
-                                             'limit': row_limit, 'sql': sql_to_run}
-        else:
-            querystore.add_history(user_input, connection_name, 'error')
+    if tab['error']:
+        show_error(*tab['error'])
+    elif isinstance(tab['df'], pd.DataFrame):
+        show_results(tab)
 
-    if isinstance(st.session_state.get('csv_data'), pd.DataFrame):
-        show_results(st.session_state.csv_data)
-    st.session_state.selected_connection = connection_name
+
+# Main function
+def main():
+    set_css_style()
+    querystore.init_db()
+    connections.init_db()
+    metadata.init_db()
+    migrated = connections.migrate_from_config(CONFIG_FILE)
+    if migrated:
+        flash('info', f"Moved connections {', '.join(migrated)} out of config.ini into the local database. "
+                      'Their passwords are kept in the Windows Credential Manager when it is available.')
+    init_tabs()
+
+    conn = connection_sidebar()
+    saved_queries_sidebar()
+
+    st.write(f'Connection name : {conn[0]}')
+    # Always-present container: messages must not shift the tabs below, or Streamlit resets the selected tab
+    with st.container():
+        show_flashes()
+
+    sql_view, schema_view = st.tabs(['📝 SQL', '🗂 Schema browser'])
+    with sql_view:
+        sql_tab(conn)
+    with schema_view:
+        schema_browser(conn)
+
 
 if __name__ == '__main__':
     main()
-
-
-if 'user_input' not in st.session_state:
-        st.session_state.user_input = ""

@@ -2,3 +2,7 @@ cloudsql_venv/
 CloudConsole - Shortcut.lnk
 # Local saved queries / history database
 cloudsql/cloudsql_queries.db
+# Autocomplete word lists downloaded from your pods
+cloudsql/components/sql_editor/cache/
+# Python bytecode
+__pycache__/

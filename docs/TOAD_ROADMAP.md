@@ -1,4 +1,4 @@
-# Cloud SQL → TOAD-style Workbench: Roadmap
+# Cloud SQL → TOAD-style Workbench: Roadmap (all phases done)
 
 A plan to grow `cloudsql/` (Streamlit + BI Publisher SOAP) into a TOAD-like SQL tool for Oracle ERP Cloud, with two fixed rules:
 
@@ -13,13 +13,13 @@ All SQL runs through the BI Publisher report `SampleReport.xdo` (`runReport` →
 
 | TOAD feature | Possible here? | Notes |
 |---|---|---|
-| SQL editor, run, grid | ✅ | Already there |
+| SQL editor, run, grid | ✅ | Highlighting editor with Ctrl+Enter added in Phase 3 |
 | Saved queries / snippets | ✅ | **Done in Phase 1** (SQLite) |
 | Query history | ✅ | **Done in Phase 1** (SQLite, last 200 runs) |
 | Export results (CSV/Excel) | ✅ | **Done in Phase 2** |
-| Schema browser (tables, columns, views) | ✅ | Run `ALL_OBJECTS` / `ALL_TAB_COLUMNS` through the same report |
-| Autocomplete for tables and columns | ✅ | Cache the metadata in SQLite, then feed it to a code editor component |
-| Multiple editor tabs | ✅ | `st.tabs` + session state |
+| Schema browser (tables, columns, views) | ✅ | **Done in Phase 3** |
+| Autocomplete for tables and columns | ✅ | **Done in Phase 3** (own Ace-based editor component) |
+| Multiple editor tabs | ✅ | **Done in Phase 4** |
 | Row limit / paging | ✅ | **Done in Phase 2** (`FETCH FIRST n ROWS ONLY`) |
 | Bind variables (`:p_org_id`) | ✅ | **Done in Phase 2** |
 | Explain plan | ⚠️ Limited | BIP data models only run `SELECT`. No `EXPLAIN PLAN` or `DBMS_XPLAN` |
@@ -55,37 +55,30 @@ All SQL runs through the BI Publisher report `SampleReport.xdo` (`runReport` →
 
 History and saved queries keep your **original** SQL (with `:binds`), so reloaded queries stay reusable.
 
-> Not done: a syntax-highlighted editor with Ctrl+Enter. The available components (`streamlit-ace`, `streamlit-code-editor`) cannot take new text from outside once they are on screen, which would break **Load** for saved queries and history. This needs a separate trial on a real machine before switching.
+> The highlighting editor was moved to Phase 3: the ready-made components (`streamlit-ace`, `streamlit-code-editor`) cannot take new text from outside once on screen and cannot autocomplete your own table names, so the app now ships its own small editor component.
 
-### Phase 3: Schema browser and autocomplete
+### ✅ Phase 3: Schema browser, highlighting editor, autocomplete (done)
 
-1. **Metadata fetch** (per connection, on demand, with a "Refresh" button):
-   ```sql
-   SELECT owner, object_name, object_type FROM all_objects
-    WHERE object_type IN ('TABLE','VIEW','SYNONYM')
-   ```
-   ```sql
-   SELECT owner, table_name, column_name, data_type, column_id
-     FROM all_tab_columns WHERE table_name = :t
-   ```
-2. **Cache in SQLite** (`meta_objects`, `meta_columns` keyed by connection) so the browser opens instantly and does not call the pod again.
-3. **Browser UI**: a sidebar search that shows columns for the chosen table. Buttons to *insert `SELECT` with all columns* or *insert table name*.
-4. **Autocomplete**: pass cached table and column names to the code editor's completer.
-5. Store columns only for tables you actually open, so the cache stays small.
+- **`metadata.py`**: downloads table and view names once per connection from `ALL_OBJECTS` (application schemas only: `ALL_USERS.ORACLE_MAINTAINED = 'N'`) into the SQLite tables `meta_objects` / `meta_status`. Columns come from `ALL_TAB_COLUMNS`, fetched only for tables you open and cached in `meta_columns`.
+- **🗂 Schema browser tab**: instant local search, column list with types, and **Insert this SELECT into the editor**.
+- **Editor component** (`components/sql_editor/`): the Ace editor (BSD licence, stored in the repo so it works offline) wired to Streamlit with plain HTML/JS, with no npm build step.
+  - **Ctrl+Enter** runs the statement under the cursor (blank line or `;` separates statements) or the selected text. **▶ Run** runs everything.
+  - Autocomplete: SQL keywords, table and view names (loaded by the browser from a static JSON file, so the list is never re-sent on every rerun), and columns of cached tables used in the query.
+  - **Plain text editor** toggle as a fallback.
 
-### Phase 4: Workspace features
+### ✅ Phase 4: Workspace features (done)
 
-- **Multiple query tabs** (`st.tabs`), each with its own editor, results and row count.
-- **Folders / favourites** for saved queries (add a `folder` column) and export/import of saved queries as a JSON file for sharing.
-- **Compare results** of the same query across two connections, e.g. DEV vs TEST (row diff via `pandas.merge(indicator=True)`).
-- **Per-connection "last query"** restored when you switch environments.
+- **Query tabs**: **＋ New** / **✕ Close**, one button per tab. Each tab keeps its own SQL, result and error. Buttons are used instead of a radio so renaming a tab (e.g. when saving) cannot confuse the selection.
+- **Folders** for saved queries (a new `folder` column, added automatically to existing databases) and a folder filter in the sidebar.
+- **Import / export** of saved queries as JSON, with an option to overwrite queries that have the same name.
+- **Compare** (`compare.py`): runs the same SQL on two connections and matches rows one to one on the common columns. `1` and `1.0` count as equal, and duplicates are respected.
+- **Last query per connection**: a sidebar button reopens the last query run on the selected connection.
 
-### Phase 5: Hardening
+### ✅ Phase 5: Hardening (done)
 
-- **Passwords**: today they sit in plain text in `config.ini`. Move them to the OS credential store with `keyring`, which uses Windows Credential Manager. `config.ini` then keeps only the URL and username.
-- **Timeouts and errors**: add `timeout=` to `requests` calls and parse the BIP SOAP fault text into a readable error.
-- **Session reuse**: use one `requests.Session` per connection to save repeated TLS handshakes.
-- **Code split**: `app.py` (UI) / `bip_client.py` (SOAP) / `querystore.py` (SQLite) / `metadata.py` (schema cache).
+- **Passwords** are kept in the Windows Credential Manager via `keyring`. Connections moved from `config.ini` to SQLite, and `config.ini` now only holds `[DEFAULT]` settings. Old `config.ini` connections are migrated automatically. If no credential store is available, the password falls back to the local database file and the sidebar says so.
+- **`bip_client.py`**: one shared `requests.Session`, a connect timeout (15 s), a read timeout (`query_timeout_seconds`, default 600 s), and readable errors (`ORA-xxxxx` line, HTTP 401/403/404, last Java exception message). Full details stay available in an expander.
+- **Code split**: `app.py` (UI), `bip_client.py` (SOAP), `reportutils.py` (report creation), `connections.py`, `querystore.py`, `metadata.py`, `sqltools.py`, `compare.py`, `db.py` (shared SQLite helper).
 
 ---
 
@@ -97,24 +90,16 @@ History and saved queries keep your **original** SQL (with `:binds`), so reloade
 4. **Create export files on demand**, not on every rerun.
 5. **Use SQLite for everything that persists** (queries, history, metadata). It lives on disk, not in RAM.
 6. **Avoid `@st.cache_data` on query results.** It keeps extra copies in memory per unique input.
-7. **Launch with minimal Streamlit overhead** (optional `cloudsql/.streamlit/config.toml`):
-   ```toml
-   [server]
-   headless = true
-   runOnSave = false
-   fileWatcherType = "none"
-
-   [browser]
-   gatherUsageStats = false
-   ```
+7. **Launch with minimal Streamlit overhead** (done in `cloudsql/.streamlit/config.toml`): no file watcher, no usage statistics, minimal toolbar.
+8. **Keep big lists out of reruns.** The autocomplete word list is a static file the browser loads once, not a component argument.
 
 ---
 
-## 4. Running locally (unchanged)
+## 4. Running locally
 
 ```bat
 setup.bat          :: once: creates cloudsql_venv and installs requirements
 CloudConsole.bat   :: starts the app at http://localhost:8501
 ```
 
-Saved queries are kept in `cloudsql\cloudsql_queries.db`. Back up that one file to keep your query library.
+Saved queries, history, connections and the schema cache are kept in `cloudsql\cloudsql_queries.db`. Back up that one file to keep your query library.

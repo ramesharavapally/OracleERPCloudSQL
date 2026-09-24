@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  #editor { width: 100%; border: 1px solid rgba(128, 128, 128, 0.35); border-radius: 6px; box-sizing: border-box; }
+  #hint { font: 12px sans-serif; color: #888; padding: 2px 4px; }
+</style>
+<script src="ace/ace.js"></script>
+<script src="ace/ext-language_tools.js"></script>
+<script src="ace/mode-sql.js"></script>
+<script src="ace/theme-sqlserver.js"></script>
+<script src="ace/theme-tomorrow_night.js"></script>
+</head>
+<body>
+<div id="editor"></div>
+<div id="hint">Ctrl+Enter runs the statement under the cursor (statements are separated by a blank line or ;) or the selected text · Ctrl+Space for suggestions</div>
+<script>
+  // Minimal Streamlit component protocol (no build step, no npm packages needed)
+  function toStreamlit(type, data) {
+    window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data), "*");
+  }
+
+  ace.config.set("basePath", "ace");
+  const langTools = ace.require("ace/ext/language_tools");
+  const editor = ace.edit("editor");
+  editor.session.setMode("ace/mode/sql");
+  editor.session.setUseWrapMode(false);
+  editor.setShowPrintMargin(false);
+  // Font is set through Ace (not CSS) so it measures lines correctly and underscores are not clipped
+  editor.setOptions({ enableBasicAutocompletion: true, enableLiveAutocompletion: true, liveAutocompletionThreshold: 2,
+                      tabSize: 4, useSoftTabs: true, fontSize: "14px",
+                      fontFamily: "Consolas, 'Source Code Pro', 'DejaVu Sans Mono', 'Courier New', monospace" });
+  editor.container.style.lineHeight = "1.5";
+  editor.renderer.updateFontSize();
+
+  let version = null, tab = null, words = [], wordsUrl = null, extraWords = [], lastSent = null, height = 0;
+
+  // TOAD-style: the statement under the cursor is the block between blank lines or semicolons
+  function statementAtCursor() {
+    const text = editor.getValue();
+    const cursor = editor.session.doc.positionToIndex(editor.getCursorPosition());
+    const separator = /;[ \t]*(\r?\n|$)|\r?\n[ \t]*\r?\n/g;
+    let start = 0, match, previous = "";
+    while ((match = separator.exec(text)) !== null) {
+      const chunk = text.slice(start, match.index);
+      if (cursor <= match.index) return chunk.trim() ? chunk : previous;
+      if (chunk.trim()) previous = chunk;
+      start = match.index + match[0].length;
+      if (match[0].length === 0) separator.lastIndex++;
+    }
+    const last = text.slice(start);
+    return last.trim() ? last : previous;
+  }
+
+  function send(run) {
+    const text = editor.getValue();
+    const selection = run ? (editor.getSelectedText() || statementAtCursor()) : "";
+    if (!run && text === lastSent) return;
+    lastSent = text;
+    toStreamlit("streamlit:setComponentValue", {
+      dataType: "json",
+      value: { text: text, version: version, tab: tab, run: run, selection: run ? selection : "", nonce: Date.now() }
+    });
+  }
+
+  // Table names from the downloaded object list, plus columns of tables used in the current query
+  const schemaCompleter = {
+    getCompletions: function (ed, session, pos, prefix, callback) {
+      if (!prefix || prefix.length < 2) { callback(null, []); return; }
+      const p = prefix.toUpperCase(), out = [];
+      for (const [column, table] of extraWords) {
+        if (column.startsWith(p)) out.push({ caption: column, value: column, meta: table, score: 1000 });
+      }
+      for (const w of words) {
+        if (w.startsWith(p)) {
+          out.push({ caption: w, value: w, meta: "table/view", score: 500 });
+          if (out.length > 300) break;
+        }
+      }
+      callback(null, out);
+    }
+  };
+  editor.completers = [langTools.keyWordCompleter, schemaCompleter];
+
+  editor.commands.addCommand({
+    name: "runQuery",
+    bindKey: { win: "Ctrl-Enter", mac: "Command-Enter" },
+    exec: function () { send(true); }
+  });
+  editor.on("blur", function () { send(false); });
+
+  window.addEventListener("message", function (event) {
+    const data = event.data;
+    if (!data || data.type !== "streamlit:render") return;
+    const args = data.args || {};
+
+    // Replace the text only when Python loaded something new (saved query, history, tab switch)
+    if (args.version !== version || args.tab !== tab) {
+      version = args.version;
+      tab = args.tab;
+      editor.session.setValue(args.value || "");
+      lastSent = args.value || "";
+    }
+    extraWords = args.extra_words || [];
+    if (args.words_url && args.words_url !== wordsUrl) {
+      wordsUrl = args.words_url;
+      fetch(args.words_url).then(r => r.json()).then(list => { words = list; }).catch(() => { words = []; });
+    } else if (!args.words_url) {
+      words = [];
+      wordsUrl = null;
+    }
+    const dark = data.theme && data.theme.base === "dark";
+    editor.setTheme(dark ? "ace/theme/tomorrow_night" : "ace/theme/sqlserver");
+    editor.setReadOnly(!!data.disabled);
+
+    if (args.height !== height) {
+      height = args.height || 300;
+      document.getElementById("editor").style.height = height + "px";
+      editor.resize();
+      toStreamlit("streamlit:setFrameHeight", { height: height + 22 });
+    }
+  });
+
+  toStreamlit("streamlit:componentReady", { apiVersion: 1 });
+</script>
+</body>
+</html>

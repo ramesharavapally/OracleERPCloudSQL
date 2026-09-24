@@ -1,0 +1,10 @@
+# Local-only settings that keep Streamlit light
+[server]
+runOnSave = false
+fileWatcherType = "none"
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
