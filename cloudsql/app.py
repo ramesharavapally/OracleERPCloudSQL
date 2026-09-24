@@ -22,13 +22,15 @@ st.set_page_config(layout="wide" ,
                    page_title="Cloud SQL",
                    page_icon="🌊",)
 
-# Features such as build-on-click downloads need Streamlit 1.52+. Explain the fix instead of crashing later.
-MIN_STREAMLIT = '1.52'
+# Oldest Streamlit the app is tested with. Explain the fix instead of crashing on a missing feature.
+MIN_STREAMLIT = '1.50'
 if Version(st.__version__) < Version(MIN_STREAMLIT):
     st.error(f'This app needs Streamlit {MIN_STREAMLIT} or newer, but it is running with Streamlit {st.__version__}.')
     st.markdown('Close this window and start the app with **CloudConsole.bat**. If it still appears, '
-                'run **setup.bat** once more; it installs the right versions into `cloudsql_venv`.')
+                'run **setup.bat** once more; it installs the right versions with uv.')
     st.stop()
+# Streamlit 1.52+ builds a download file only when its button is clicked
+LAZY_DOWNLOADS = Version(st.__version__) >= Version('1.52')
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
 ROW_LIMITS = [100, 1000, 10000, 'All']
 EDITOR_HEIGHT = 300
@@ -331,8 +333,9 @@ def saved_queries_sidebar():
         delete_col.button('Delete', on_click=delete_saved_query, width='stretch')
 
     with st.sidebar.expander('Import / export saved queries'):
-        st.download_button('⬇ Export all to JSON', data=lambda: querystore.export_queries_json().encode('utf-8'),
-                           file_name='cloudsql_saved_queries.json', mime='application/json', width='stretch')
+        download_button('⬇ Export all to JSON', lambda: querystore.export_queries_json().encode('utf-8'),
+                        key='export_json', file_name='cloudsql_saved_queries.json', mime='application/json',
+                        width='stretch')
         st.file_uploader('Import from JSON', type=['json'], key='import_file')
         st.checkbox('Overwrite queries with the same name', key='import_overwrite')
         st.button('Import', on_click=import_queries, width='stretch')
@@ -345,6 +348,24 @@ def saved_queries_sidebar():
             labels = {h[0]: f"{h[6]} | {h[2]} | {h[3]} | {' '.join(h[1].split())[:50]}" for h in history}
             st.selectbox('Run', list(labels), key='hist_pick', format_func=labels.get)
             st.button('Load into editor', on_click=load_history_query)
+
+
+# ---------- Downloads ----------
+
+def _prepare_download(key):
+    ss[f'prepared_{key}'] = True
+
+def download_button(label, make_bytes, key, container=None, **kwargs):
+    """Download button whose file is built only on demand, on every supported Streamlit version."""
+    container = container or st
+    if LAZY_DOWNLOADS:
+        return container.download_button(label, data=make_bytes, key=key, **kwargs)
+    # Older Streamlit: the first click builds the file, the second click saves it
+    if ss.pop(f'prepared_{key}', False):
+        return container.download_button(f'💾 Save {label.lstrip("⬇ ")}', data=make_bytes(), key=key, **kwargs)
+    container.button(label, key=f'prepare_{key}', on_click=_prepare_download, args=(key,),
+                     disabled=kwargs.get('disabled', False), help=kwargs.get('help'),
+                     width=kwargs.get('width', 'content'))
 
 
 # ---------- Results ----------
@@ -373,12 +394,13 @@ def show_results(tab):
     # Export files are only built when the button is clicked
     file_base = ''.join(c if c.isalnum() or c in '-_' else '_' for c in tab['title']) or 'query_result'
     csv_col, xlsx_col, _ = st.columns([1, 1, 4])
-    csv_col.download_button('⬇ CSV', data=lambda: view.to_csv(index=False).encode('utf-8'),
-                            file_name=f'{file_base}.csv', mime='text/csv', width='stretch')
-    xlsx_col.download_button('⬇ Excel', data=lambda: to_excel_bytes(view), file_name=f'{file_base}.xlsx',
-                             mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                             width='stretch', disabled=len(view) > 1_048_575,
-                             help='Excel allows at most 1,048,575 data rows')
+    download_button('⬇ CSV', lambda: view.to_csv(index=False).encode('utf-8'), key='download_csv',
+                    container=csv_col, file_name=f'{file_base}.csv', mime='text/csv', width='stretch')
+    download_button('⬇ Excel', lambda: to_excel_bytes(view), key='download_xlsx', container=xlsx_col,
+                    file_name=f'{file_base}.xlsx',
+                    mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    width='stretch', disabled=len(view) > 1_048_575,
+                    help='Excel allows at most 1,048,575 data rows')
 
     with st.expander('SQL sent to the pod'):
         st.code(info['sql'], language='sql')

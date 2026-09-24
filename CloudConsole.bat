@@ -1,13 +1,20 @@
 @echo off
-REM Starts Cloud SQL with the Python of cloudsql_venv (never the global Python)
-set "VENV_PY=%~dp0cloudsql_venv\Scripts\python.exe"
+REM Starts Cloud SQL inside the uv environment (.venv) with the locked package versions
+cd /d "%~dp0"
 
-if not exist "%VENV_PY%" (
-    echo cloudsql_venv was not found next to this file.
-    echo Run setup.bat once, then start CloudConsole.bat again.
-    pause
-    exit /b 1
-)
+set "UV=uv"
+uv --version >nul 2>&1
+if not errorlevel 1 goto have_uv
 
+set "UV=python -m uv"
+python -m uv --version >nul 2>&1
+if not errorlevel 1 goto have_uv
+
+echo uv was not found. Run setup.bat once first.
+pause
+exit /b 1
+
+:have_uv
 cd /d "%~dp0cloudsql"
-"%VENV_PY%" -m streamlit run app.py
+%UV% run --locked streamlit run app.py
+if errorlevel 1 pause

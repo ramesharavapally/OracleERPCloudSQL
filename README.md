@@ -6,14 +6,27 @@ A small TOAD-style SQL workbench for Oracle ERP (Fusion) Cloud. It runs **on you
 
 ---
 
-## Installation
+## Installation (uv)
 
-1. **Python**: install Python 3.10 or newer (tick *Add python.exe to PATH*).
+The project uses [uv](https://docs.astral.sh/uv/). `pyproject.toml` lists the packages and `uv.lock` pins their exact versions, so every PC gets the same, tested setup.
+
+1. **Python 3.12**: install it and tick *Add python.exe to PATH*. `.python-version` asks for 3.12; if it is missing, uv can download it.
 2. **Get the code**: clone this repository or download it as a ZIP and unpack it.
-3. **Setup**: run `setup.bat`. It creates `cloudsql_venv` in the same folder and installs `requirements.txt`. Run it again after every update, and once in every new folder (a new ZIP download has no `cloudsql_venv` yet).
-4. **Start**: run `CloudConsole.bat`. The app opens at <http://localhost:8501>.
+3. **Setup**: run `setup.bat`. It installs uv (with pip) if needed, then runs `uv sync --locked`, which creates `.venv` in the project folder with the locked packages. Run it again after every update.
+4. **Start**: run `CloudConsole.bat`. It runs `uv run --locked streamlit run app.py` inside `cloudsql`, so the app always uses `.venv`. The app opens at <http://localhost:8501>.
 
-> Always start the app with `CloudConsole.bat`. It uses the Python inside `cloudsql_venv`, which has the right package versions. Running `streamlit run app.py` from a normal command prompt uses your global Python instead, and an older Streamlit there will not work (the app then says which version it found).
+The same from a terminal:
+
+```bat
+uv sync --locked
+cd cloudsql
+uv run streamlit run app.py
+```
+
+> - Do not start the app with a plain `streamlit run app.py`. That uses your global Python and whatever Streamlit it has. The app checks the version and shows a message if it is older than 1.50.
+> - The old `cloudsql_venv` folder from earlier versions is no longer used and can be deleted.
+> - Without uv: `pip install -r requirements.txt` in your own virtual environment. `requirements.txt` is exported from `uv.lock` with the same versions.
+> - To update packages: `uv lock --upgrade`, test, then commit `uv.lock` and re-export `requirements.txt` with `uv export --no-hashes --no-header --format requirements-txt -o requirements.txt`.
 
 ---
 

@@ -1,30 +1,30 @@
 @echo off
-REM Creates cloudsql_venv next to this file and installs or upgrades the requirements.
-REM Safe to run again after every update.
+REM One-time setup (and after every update): installs uv if needed, then creates .venv
+REM with the exact package versions from uv.lock.
 cd /d "%~dp0"
 
-python --version >nul 2>&1
+set "UV=uv"
+uv --version >nul 2>&1
+if not errorlevel 1 goto have_uv
+
+set "UV=python -m uv"
+python -m uv --version >nul 2>&1
+if not errorlevel 1 goto have_uv
+
+echo uv was not found. Installing it with pip...
+python -m pip install --user --upgrade uv
 if errorlevel 1 (
-    echo Python was not found. Install Python 3.10 or newer and tick "Add python.exe to PATH".
+    echo Could not install uv. Install it from https://docs.astral.sh/uv/ and run setup.bat again.
     pause
     exit /b 1
 )
 
-if not exist "cloudsql_venv\Scripts\python.exe" (
-    echo Creating virtual environment...
-    python -m venv cloudsql_venv
-    if errorlevel 1 (
-        echo Could not create the virtual environment.
-        pause
-        exit /b 1
-    )
-)
-
-echo Installing requirements...
-"cloudsql_venv\Scripts\python.exe" -m pip install --upgrade pip
-"cloudsql_venv\Scripts\python.exe" -m pip install --upgrade -r requirements.txt
+:have_uv
+echo Using %UV%
+echo Creating .venv and installing the locked packages...
+%UV% sync --locked
 if errorlevel 1 (
-    echo Installing the requirements failed. See the messages above.
+    echo Setup failed. See the messages above.
     pause
     exit /b 1
 )

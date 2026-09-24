@@ -6,3 +6,5 @@ cloudsql/cloudsql_queries.db
 cloudsql/components/sql_editor/cache/
 # Python bytecode
 __pycache__/
+# uv environment
+.venv/
