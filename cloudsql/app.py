@@ -5,13 +5,14 @@ import pandas as pd
 from io import BytesIO
 import configparser
 import os
+import time
 from reportutils import create_report
+import querystore
 
 # Set page configuration to wide mode by default
 st.set_page_config(layout="wide" ,
                    page_title="Cloud SQL",
                    page_icon="🌊",)
-pd.set_option("styler.render.max_elements", 50000000)
 CONFIG_FILE = 'config.ini'
 
 def set_css_style():
@@ -113,20 +114,74 @@ def decode_base64_and_display_csv(base64_data):
     # Read the decoded data as CSV
     csv_data = pd.read_csv(BytesIO(decoded_data))
     
-    # st.table(csv_data)
-    # st.write(csv_data)
-    
     st.session_state.csv_data = csv_data
-    
-    st.dataframe(csv_data.style.set_caption("Decoded CSV Data").set_table_styles([{
-        'selector': 'th',
-        'props': [('font-weight', 'bold')]
-    }]), width=5000)
+    show_results(csv_data)
+    return csv_data
+
+# Plain dataframe grid: a pandas Styler renders every cell to HTML and uses far more memory
+def show_results(csv_data):
+    st.dataframe(csv_data, width='stretch')
+
+# ---------- Saved query / history callbacks (run before the page re-renders) ----------
+
+def load_into_editor(sql_text, name=None):
+    st.session_state.sql_editor = sql_text
+    if name:
+        st.session_state.save_name = name
+
+def load_saved_query():
+    sql_text, tags = querystore.get_query(st.session_state.sq_pick)
+    if sql_text is not None:
+        load_into_editor(sql_text, st.session_state.sq_pick)
+        st.session_state.save_tags = tags or ''
+
+def delete_saved_query():
+    querystore.delete_query(st.session_state.sq_pick)
+    st.session_state.flash = ('success', f"Deleted saved query '{st.session_state.sq_pick}'")
+
+def save_current_query():
+    name = st.session_state.get('save_name', '').strip()
+    sql_text = st.session_state.get('sql_editor', '').strip()
+    if not name or not sql_text:
+        st.session_state.flash = ('warning', 'Enter a query name and some SQL before saving')
+        return
+    updated = querystore.save_query(name, sql_text, st.session_state.get('save_tags', '').strip())
+    st.session_state.flash = ('success', f"{'Updated' if updated else 'Saved'} query '{name}'")
+
+def load_history_query():
+    load_into_editor(st.session_state.hist_pick[1])
+
+def saved_queries_sidebar():
+    st.sidebar.divider()
+    st.sidebar.subheader('Saved Queries')
+    search = st.sidebar.text_input('Search name / tag / SQL', key='sq_search')
+    names = [row[0] for row in querystore.list_queries(search)]
+    if not names:
+        st.sidebar.caption('No saved queries yet')
+    else:
+        picked = st.sidebar.selectbox('Query', names, key='sq_pick')
+        sql_text, tags = querystore.get_query(picked)
+        if tags:
+            st.sidebar.caption(f'Tags: {tags}')
+        st.sidebar.code(sql_text if len(sql_text) <= 400 else sql_text[:400] + ' ...', language='sql')
+        load_col, delete_col = st.sidebar.columns(2)
+        load_col.button('Load', on_click=load_saved_query, width='stretch')
+        delete_col.button('Delete', on_click=delete_saved_query, width='stretch')
+
+    with st.sidebar.expander('Recent runs'):
+        history = querystore.list_history(30)
+        if not history:
+            st.caption('No queries run yet')
+        else:
+            st.selectbox('Run', history, key='hist_pick',
+                         format_func=lambda h: f"{h[6]} | {h[3]} | {' '.join(h[1].split())[:50]}")
+            st.button('Load into editor', on_click=load_history_query)
 
 # Main function
 def main():
     # Input fields for selecting saved connections    
     set_css_style()
+    querystore.init_db()
     saved_connections = load_saved_connections()    
     selected_connection = st.sidebar.selectbox('Select Connection:', saved_connections)
     connection_name = selected_connection
@@ -162,14 +217,27 @@ def main():
                         
         st.session_state.selected_connection = selected_connection
 
+    saved_queries_sidebar()
+
     st.write(f'Connection name : {connection_name}')
+    if 'flash' in st.session_state:
+        level, message = st.session_state.pop('flash')
+        getattr(st, level)(message)
+
     # Input field for user to enter data
-    user_input = st.text_area('Enter valid query', height=250)
+    user_input = st.text_area('Enter valid query', height=250, key='sql_editor')
     
     submit =  st.button('Run')
 
+    with st.expander('💾 Save query'):
+        name_col, tags_col = st.columns([2, 1])
+        name_col.text_input('Query name (same name overwrites)', key='save_name')
+        tags_col.text_input('Tags (optional, comma separated)', key='save_tags')
+        st.button('Save query', on_click=save_current_query)
+
     # Button to submit the input data
     if submit:                
+        started = time.perf_counter()
         # Convert user input to base64
         base64_input = base64.b64encode(user_input.encode()).decode()
 
@@ -205,18 +273,26 @@ def main():
             # Replace None values with 'null' for better display
             report_bytes = report_bytes if report_bytes is not None else 'null'
             # Decode base64 response and display CSV data
-            decode_base64_and_display_csv(report_bytes)
+            try:
+                csv_data = decode_base64_and_display_csv(report_bytes)
+            except Exception as e:
+                st.session_state.csv_data = ""
+                querystore.add_history(user_input, connection_name, 'error')
+                st.error(f"Could not read the query result: {e}")
+            else:
+                elapsed = round(time.perf_counter() - started, 2)
+                querystore.add_history(user_input, connection_name, 'ok', len(csv_data), elapsed)
+                st.caption(f'{len(csv_data)} rows in {elapsed} s')
+        else:
+            querystore.add_history(user_input, connection_name, 'error')
     # Set the selected connection to the newly created or updated connection
     else:
         if 'csv_data' not in st.session_state:
             st.session_state.csv_data = ""
         elif 'csv_data'  in st.session_state:
             try:
-                st.dataframe(st.session_state.csv_data.style.set_caption("Decoded CSV Data").set_table_styles([{
-                'selector': 'th',
-                'props': [('font-weight', 'bold')]
-                }]), width=5000)                 
-   
+                if isinstance(st.session_state.csv_data, pd.DataFrame):
+                    show_results(st.session_state.csv_data)
             except Exception as e:
                 pass
     st.session_state.selected_connection = connection_name
