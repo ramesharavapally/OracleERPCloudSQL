@@ -16,12 +16,12 @@ All SQL runs through the BI Publisher report `SampleReport.xdo` (`runReport` →
 | SQL editor, run, grid | ✅ | Already there |
 | Saved queries / snippets | ✅ | **Done in Phase 1** (SQLite) |
 | Query history | ✅ | **Done in Phase 1** (SQLite, last 200 runs) |
-| Export results (CSV/Excel) | ✅ | Phase 2 |
+| Export results (CSV/Excel) | ✅ | **Done in Phase 2** |
 | Schema browser (tables, columns, views) | ✅ | Run `ALL_OBJECTS` / `ALL_TAB_COLUMNS` through the same report |
 | Autocomplete for tables and columns | ✅ | Cache the metadata in SQLite, then feed it to a code editor component |
 | Multiple editor tabs | ✅ | `st.tabs` + session state |
-| Row limit / paging | ✅ | Wrap the query in `FETCH FIRST n ROWS ONLY` |
-| Bind variables (`:p_org_id`) | ✅ | Find `:name` tokens, ask for values, substitute them |
+| Row limit / paging | ✅ | **Done in Phase 2** (`FETCH FIRST n ROWS ONLY`) |
+| Bind variables (`:p_org_id`) | ✅ | **Done in Phase 2** |
 | Explain plan | ⚠️ Limited | BIP data models only run `SELECT`. No `EXPLAIN PLAN` or `DBMS_XPLAN` |
 | DML / DDL / PL/SQL execution | ❌ | Not possible through BIP. This stays a read-only tool |
 | Session browser, locks, debugger | ❌ | Needs a direct DB connection, which ERP Cloud does not give |
@@ -41,16 +41,21 @@ All SQL runs through the BI Publisher report `SampleReport.xdo` (`runReport` →
 - A `rows in seconds` line under each result.
 - **Memory fix:** results used to be rendered through a pandas `Styler`, with `styler.render.max_elements = 50,000,000`. That turns every cell into HTML and was the largest memory cost in the app. A plain `st.dataframe` now renders the grid instead.
 
-### Phase 2: Editor and results quality of life
+### ✅ Phase 2: Editor and results quality of life (done)
 
-| Item | How | Memory impact |
+| Item | How it works | Memory impact |
 |---|---|---|
-| Syntax-highlighted editor with Ctrl+Enter to run | `streamlit-code-editor` or `streamlit-ace` | Small (one JS component) |
-| Row limit selector (100 / 1,000 / 10,000 / all) | Wrap the query: `SELECT * FROM (<sql>) FETCH FIRST :n ROWS ONLY` | **Lowers** memory |
-| Export to CSV / Excel | `st.download_button`. Build the file only when clicked (`openpyxl` for xlsx) | Only while exporting |
-| Bind variables prompt | Regex `:(\w+)` → a form with one input per variable | None |
-| Format SQL button | `sqlparse.format(sql, reindent=True, keyword_case='upper')` | Tiny |
-| Result filter box | `df[df.astype(str).apply(lambda c: c.str.contains(q, case=False)).any(axis=1)]` | Temporary copy only |
+| **Row limit** (100 / 1,000 / 10,000 / All, default 1,000) | The query is sent as `SELECT * FROM (<sql>) FETCH FIRST n ROWS ONLY`. A note appears when the limit is reached | **Lowers** memory |
+| **Bind variables** | Each `:name` in the SQL gets an input box. Numbers are sent as-is, other text is quoted, empty means `NULL`. `:x` inside strings, comments and `"quoted"` names is ignored | None |
+| **Format** button | `sqlparse` re-indents and upper-cases keywords | Tiny |
+| **Result filter** | Shows only rows that contain the typed text in any column | Temporary copy only while filtering |
+| **Export CSV / Excel** | The file is built only when you click the button (needs Streamlit 1.52+) | Only while exporting |
+| **SQL sent to the pod** | An expander shows the exact SQL after binds and the row limit were applied | None |
+| Trailing `;` or `/` | Removed automatically before sending | None |
+
+History and saved queries keep your **original** SQL (with `:binds`), so reloaded queries stay reusable.
+
+> Not done: a syntax-highlighted editor with Ctrl+Enter. The available components (`streamlit-ace`, `streamlit-code-editor`) cannot take new text from outside once they are on screen, which would break **Load** for saved queries and history. This needs a separate trial on a real machine before switching.
 
 ### Phase 3: Schema browser and autocomplete
 
@@ -88,7 +93,7 @@ All SQL runs through the BI Publisher report `SampleReport.xdo` (`runReport` →
 
 1. **Never use `DataFrame.style` for results.** Use `st.dataframe(df)` directly.
 2. **Keep one copy of the result.** Store only the DataFrame in `st.session_state`, not the raw base64 or CSV bytes as well.
-3. **Limit rows by default** (Phase 2). Most ad-hoc queries only need the first 1,000 rows.
+3. **Limit rows by default** (done: 1,000 rows unless you pick more). Most ad-hoc queries only need the first 1,000 rows.
 4. **Create export files on demand**, not on every rerun.
 5. **Use SQLite for everything that persists** (queries, history, metadata). It lives on disk, not in RAM.
 6. **Avoid `@st.cache_data` on query results.** It keeps extra copies in memory per unique input.

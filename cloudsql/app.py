@@ -8,6 +8,9 @@ import os
 import time
 from reportutils import create_report
 import querystore
+import sqltools
+
+ROW_LIMITS = [100, 1000, 10000, 'All']
 
 # Set page configuration to wide mode by default
 st.set_page_config(layout="wide" ,
@@ -106,21 +109,67 @@ def extract_report_bytes(response_text):
     else:
         return None
 
-# Function to decode base64 and display CSV
-def decode_base64_and_display_csv(base64_data):    
+# Function to decode base64 into a DataFrame
+def decode_base64_to_dataframe(base64_data):    
     # Decode base64 data
     decoded_data = base64.b64decode(base64_data)
 
     # Read the decoded data as CSV
-    csv_data = pd.read_csv(BytesIO(decoded_data))
-    
-    st.session_state.csv_data = csv_data
-    show_results(csv_data)
-    return csv_data
+    return pd.read_csv(BytesIO(decoded_data))
+
+def to_excel_bytes(df):
+    buffer = BytesIO()
+    df.to_excel(buffer, index=False, engine='openpyxl')
+    return buffer.getvalue()
 
 # Plain dataframe grid: a pandas Styler renders every cell to HTML and uses far more memory
 def show_results(csv_data):
-    st.dataframe(csv_data, width='stretch')
+    info = st.session_state.get('run_info', {})
+    if info:
+        message = f"{info['rows']} rows in {info['elapsed']} s"
+        if info['limit'] and info['rows'] >= info['limit']:
+            message += f" · row limit {info['limit']} reached, choose a higher limit to see more"
+        st.caption(message)
+
+    search = st.text_input('Filter results', key='result_filter', placeholder='Type to show only rows containing this text')
+    view = csv_data
+    if search:
+        mask = csv_data.astype(str).apply(lambda col: col.str.contains(search, case=False, regex=False)).any(axis=1)
+        view = csv_data[mask]
+        st.caption(f'{len(view)} of {len(csv_data)} rows match')
+    st.dataframe(view, width='stretch')
+
+    # Export files are only built when the button is clicked
+    csv_col, xlsx_col, _ = st.columns([1, 1, 4])
+    csv_col.download_button('⬇ CSV', data=lambda: view.to_csv(index=False).encode('utf-8'),
+                            file_name='query_result.csv', mime='text/csv', width='stretch')
+    xlsx_col.download_button('⬇ Excel', data=lambda: to_excel_bytes(view), file_name='query_result.xlsx',
+                             mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                             width='stretch', disabled=len(view) > 1_048_575,
+                             help='Excel allows at most 1,048,575 data rows')
+
+    if info.get('sql'):
+        with st.expander('SQL sent to the pod'):
+            st.code(info['sql'], language='sql')
+
+# ---------- Editor callbacks ----------
+
+def format_editor_sql():
+    try:
+        st.session_state.sql_editor = sqltools.format_sql(st.session_state.get('sql_editor', ''))
+    except ImportError:
+        st.session_state.flash = ('warning', 'Formatting needs the sqlparse package: run setup.bat again')
+
+def bind_inputs(sql_text):
+    """Show one input per :bind variable and return {name: value}."""
+    binds = sqltools.find_binds(sql_text)
+    if not binds:
+        return {}
+    st.markdown('**Bind variables** · numbers are sent as-is, other values as quoted text, empty means NULL')
+    columns = st.columns(min(len(binds), 4))
+    for i, name in enumerate(binds):
+        columns[i % len(columns)].text_input(f':{name}', key=f'bind_{name.upper()}')
+    return {name: st.session_state.get(f'bind_{name.upper()}', '') for name in binds}
 
 # ---------- Saved query / history callbacks (run before the page re-renders) ----------
 
@@ -226,8 +275,13 @@ def main():
 
     # Input field for user to enter data
     user_input = st.text_area('Enter valid query', height=250, key='sql_editor')
-    
-    submit =  st.button('Run')
+    bind_values = bind_inputs(user_input)
+
+    run_col, format_col, limit_col, _ = st.columns([1, 1, 1.5, 4], vertical_alignment='bottom')
+    submit = run_col.button('▶ Run', type='primary', width='stretch')
+    format_col.button('Format', on_click=format_editor_sql, width='stretch')
+    row_limit = limit_col.selectbox('Row limit', ROW_LIMITS, index=1, key='row_limit')
+    row_limit = None if row_limit == 'All' else row_limit
 
     with st.expander('💾 Save query'):
         name_col, tags_col = st.columns([2, 1])
@@ -236,10 +290,14 @@ def main():
         st.button('Save query', on_click=save_current_query)
 
     # Button to submit the input data
-    if submit:                
+    if submit and not sqltools.clean_sql(user_input):
+        st.warning('Enter a query to run')
+    elif submit:                
         started = time.perf_counter()
+        sql_to_run = sqltools.apply_row_limit(
+            sqltools.apply_binds(sqltools.clean_sql(user_input), bind_values), row_limit)
         # Convert user input to base64
-        base64_input = base64.b64encode(user_input.encode()).decode()
+        base64_input = base64.b64encode(sql_to_run.encode()).decode()
 
         # Construct the SOAP request payload with the base64 input
         soap_payload = f"""
@@ -274,27 +332,23 @@ def main():
             report_bytes = report_bytes if report_bytes is not None else 'null'
             # Decode base64 response and display CSV data
             try:
-                csv_data = decode_base64_and_display_csv(report_bytes)
-            except Exception as e:
+                # Free the previous result before building the new one
                 st.session_state.csv_data = ""
+                csv_data = decode_base64_to_dataframe(report_bytes)
+            except Exception as e:
                 querystore.add_history(user_input, connection_name, 'error')
                 st.error(f"Could not read the query result: {e}")
             else:
                 elapsed = round(time.perf_counter() - started, 2)
                 querystore.add_history(user_input, connection_name, 'ok', len(csv_data), elapsed)
-                st.caption(f'{len(csv_data)} rows in {elapsed} s')
+                st.session_state.csv_data = csv_data
+                st.session_state.run_info = {'rows': len(csv_data), 'elapsed': elapsed,
+                                             'limit': row_limit, 'sql': sql_to_run}
         else:
             querystore.add_history(user_input, connection_name, 'error')
-    # Set the selected connection to the newly created or updated connection
-    else:
-        if 'csv_data' not in st.session_state:
-            st.session_state.csv_data = ""
-        elif 'csv_data'  in st.session_state:
-            try:
-                if isinstance(st.session_state.csv_data, pd.DataFrame):
-                    show_results(st.session_state.csv_data)
-            except Exception as e:
-                pass
+
+    if isinstance(st.session_state.get('csv_data'), pd.DataFrame):
+        show_results(st.session_state.csv_data)
     st.session_state.selected_connection = connection_name
 
 if __name__ == '__main__':
