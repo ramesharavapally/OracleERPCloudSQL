@@ -49,6 +49,13 @@ def set_css_style():
             font-family: "Source Code Pro", monospace !important;
             font-optical-sizing: auto !important;
         }
+        /* Use the space Streamlit leaves empty at the top of the page and the sidebar */
+        [data-testid="stMainBlockContainer"] { padding-top: 2rem; padding-bottom: 1rem; }
+        /* The top bar would paint over the raised content: make it see-through, keep its buttons clickable */
+        [data-testid="stHeader"] { background: transparent; pointer-events: none; }
+        [data-testid="stHeader"] button, [data-testid="stHeader"] a, [data-testid="stToolbar"] { pointer-events: auto; }
+        [data-testid="stSidebarHeader"] { height: 2.5rem; padding: 0.5rem 1rem 0 1rem; margin-bottom: 0; }
+        [data-testid="stSidebarUserContent"] { padding-top: 0; }
         /* Keep the Run row tight under the editor */
         .st-key-run_row { margin-top: -0.75rem; }
         </style>
@@ -644,7 +651,7 @@ def main():
     conn = connection_sidebar()
     saved_queries_sidebar()
 
-    st.write(f'Connection name : {conn[0]}')
+    st.caption(f'🔌 Connection: **{conn[0] or "none selected"}**')
     # Always-present container: messages must not shift the tabs below, or Streamlit resets the selected tab
     with st.container():
         show_flashes()
