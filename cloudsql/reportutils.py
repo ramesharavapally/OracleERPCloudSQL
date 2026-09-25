@@ -1,4 +1,6 @@
-import requests
+from bip_client import post_soap, BipError
+
+CATALOG_TIMEOUT = (15, 120)
 
 
 def __string_to_bool(s):
@@ -18,8 +20,6 @@ def __check_object_exists(username : str , password : str , url : str , object_n
     
     url = f'{url}//xmlpserver/services/v2/CatalogService?wsdl'    
     
-    headers = {'Content-Type': 'application/soap+xml'}
-    
     payload = f"""
                 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:v2="http://xmlns.oracle.com/oxp/service/v2">
                     <soapenv:Header/>
@@ -33,27 +33,22 @@ def __check_object_exists(username : str , password : str , url : str , object_n
                 </soapenv:Envelope>
                 """
     
-    response = requests.request(method='POST', url=url, data=payload, headers=headers, auth=(username, password))
-    if response.status_code == 200:
-        response_text = response.text
-        start_tag = "<objectExistReturn>"
-        end_tag = "</objectExistReturn>"
-        start_index = response_text.find(start_tag)
-        end_index = response_text.find(end_tag)
-        if start_index != -1 and end_index != -1:
-            return __string_to_bool(response_text[start_index + len(start_tag):end_index].strip())                                    
-        else:
-            raise ValueError(f"Error while getting report status {response.status_code} {response.text}")
+    response = post_soap(url, payload, username, password, CATALOG_TIMEOUT)
+    response_text = response.text
+    start_tag = "<objectExistReturn>"
+    end_tag = "</objectExistReturn>"
+    start_index = response_text.find(start_tag)
+    end_index = response_text.find(end_tag)
+    if start_index != -1 and end_index != -1:
+        return __string_to_bool(response_text[start_index + len(start_tag):end_index].strip())                                    
     else:
-        raise ValueError(f"Error while checkign report exists {response.status_code} {response.text}")
+        raise BipError("Unexpected answer while checking if the report exists", response_text)
     
 
 def __upload_object(url , username , password , object_name , object_type ) ->  bool:
     url = f'{url}//xmlpserver/services/v2/CatalogService?wsdl'   
     
     object_name = object_name.rsplit('.', 1)[0] 
-    
-    headers = {'Content-Type': 'application/soap+xml'}
     
     payload = None
     
@@ -91,28 +86,25 @@ def __upload_object(url , username , password , object_name , object_type ) ->  
     else:
         raise ValueError(f"Invlaid object type provided {object_type}")
     
-    response = requests.request(method='POST', url=url, data=payload, headers=headers, auth=(username, password))
-    if response.status_code == 200:
-        response_text = response.text
-        start_tag = "<uploadObjectReturn>"
-        end_tag = "</uploadObjectReturn>"
-        start_index = response_text.find(start_tag)
-        end_index = response_text.find(end_tag)
-        if start_index != -1 and end_index != -1:
-            return response_text[start_index + len(start_tag):end_index].strip() == f"{object_name}.{object_type}"
-        else:
-            raise ValueError(f"Error while getting report status {response.status_code} {response.text}")
+    response = post_soap(url, payload, username, password, CATALOG_TIMEOUT)
+    response_text = response.text
+    start_tag = "<uploadObjectReturn>"
+    end_tag = "</uploadObjectReturn>"
+    start_index = response_text.find(start_tag)
+    end_index = response_text.find(end_tag)
+    if start_index != -1 and end_index != -1:
+        return response_text[start_index + len(start_tag):end_index].strip() == f"{object_name}.{object_type}"
     else:
-        raise ValueError(f"Error while checkign report exists {response.status_code} {response.text}")
+        raise BipError("Unexpected answer while uploading the report", response_text)
     
 def create_report(url , username , password , datamodel_name , report_name):
     dm_result = __check_object_exists(username , password , url , datamodel_name )
     if not dm_result:
         result = __upload_object(url , username , password , datamodel_name , 'xdm')        
         if result == False:
-            raise ValueError('Error while creating Datamodel')    
+            raise BipError('Error while creating Datamodel')    
     report_result = __check_object_exists(username , password , url , report_name)
     if not report_result:
         result = __upload_object(url , username , password , report_name , 'xdo')        
         if result == False:
-            raise ValueError('Error while creating report')        
+            raise BipError('Error while creating report')        

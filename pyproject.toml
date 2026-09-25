@@ -1,0 +1,19 @@
+[project]
+name = "oracle-erp-cloud-sql"
+version = "1.0.0"
+description = "Local TOAD-style SQL workbench for Oracle ERP Cloud, running queries through BI Publisher"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "streamlit>=1.52",
+    "pandas>=2.0",
+    "requests>=2.31",
+    "sqlparse>=0.5",
+    "openpyxl>=3.1",
+    "keyring>=24",
+    "packaging>=23",
+]
+
+[tool.uv]
+# This is an application, not a library: uv only manages its environment
+package = false

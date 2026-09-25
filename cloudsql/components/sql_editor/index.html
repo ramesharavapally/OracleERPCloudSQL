@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  #editor { width: 100%; border: 1px solid rgba(128, 128, 128, 0.35); border-radius: 6px; box-sizing: border-box; }
+</style>
+<script src="ace/ace.js"></script>
+<script src="ace/ext-language_tools.js"></script>
+<script src="ace/mode-sql.js"></script>
+<script src="ace/theme-sqlserver.js"></script>
+<script src="ace/theme-tomorrow_night.js"></script>
+</head>
+<body>
+<div id="editor"></div>
+<script>
+  // Minimal Streamlit component protocol (no build step, no npm packages needed)
+  function toStreamlit(type, data) {
+    window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data), "*");
+  }
+
+  ace.config.set("basePath", "ace");
+  const langTools = ace.require("ace/ext/language_tools");
+  const editor = ace.edit("editor");
+  editor.session.setMode("ace/mode/sql");
+  editor.session.setUseWrapMode(false);
+  editor.setShowPrintMargin(false);
+  // Font is set through Ace (not CSS) so it measures lines correctly and underscores are not clipped
+  editor.setOptions({ enableBasicAutocompletion: true, enableLiveAutocompletion: true, liveAutocompletionThreshold: 2,
+                      tabSize: 4, useSoftTabs: true, fontSize: "14px",
+                      fontFamily: "Consolas, 'Source Code Pro', 'DejaVu Sans Mono', 'Courier New', monospace" });
+  editor.container.style.lineHeight = "1.5";
+  editor.renderer.updateFontSize();
+
+  let version = null, tab = null, words = [], wordSet = new Set(), wordsUrl = null, lastSent = null, height = 0;
+  let columnsByTable = {};          // TABLE -> [COLUMN, ...] for tables used in the query (sent by Python)
+  const askedTables = new Set();    // tables Python was already told about
+
+  const SQL_WORDS = new Set(["WHERE", "ON", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "FULL", "CROSS", "GROUP",
+    "ORDER", "HAVING", "UNION", "MINUS", "INTERSECT", "CONNECT", "START", "FETCH", "OFFSET", "FOR", "AND", "OR",
+    "SELECT", "FROM", "AS", "SET", "USING", "NATURAL", "PARTITION", "WITH"]);
+
+  // alias -> TABLE, from "FROM table alias", "JOIN table AS alias" and "..., table alias"
+  function aliasesIn(text) {
+    const aliases = {};
+    const re = /(?:\bfrom|\bjoin|,)\s+(?:[A-Za-z_][\w$#]*\.)?([A-Za-z_][\w$#]*)(?:\s+(?:as\s+)?([A-Za-z_][\w$#]*))?/gi;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const table = m[1].toUpperCase();
+      aliases[table] = table;
+      if (m[2] && !SQL_WORDS.has(m[2].toUpperCase())) aliases[m[2].toUpperCase()] = table;
+    }
+    return aliases;
+  }
+
+  // Tables Python should fetch columns for: names after FROM/JOIN, or words that are known tables.
+  // With complete=true only names already followed by a space, comma, bracket... (not still being typed).
+  function tablesIn(text, complete) {
+    const end = complete ? "(?=[^\\w$#])" : "";
+    const found = new Set();
+    const re = new RegExp("\\b(?:from|join)\\s+(?:[A-Za-z_][\\w$#]*\\.)?([A-Za-z_][\\w$#]*)" + end, "gi");
+    let m;
+    while ((m = re.exec(text)) !== null) found.add(m[1].toUpperCase());
+    const words = new RegExp("[A-Za-z_][\\w$#]*" + end, "g");
+    while ((m = words.exec(text)) !== null) if (wordSet.has(m[0].toUpperCase())) found.add(m[0].toUpperCase());
+    return found;
+  }
+
+  // The word just before the cursor when it ends with a dot ("h." or "po_headers_all."), else null
+  function qualifierBefore(session, pos, prefix) {
+    const line = session.getLine(pos.row).slice(0, pos.column - prefix.length);
+    const m = line.match(/([A-Za-z_][\w$#]*)\.$/);
+    return m ? m[1].toUpperCase() : null;
+  }
+
+  // TOAD-style: the statement under the cursor is the block between blank lines or semicolons
+  function statementAtCursor() {
+    const text = editor.getValue();
+    const cursor = editor.session.doc.positionToIndex(editor.getCursorPosition());
+    const separator = /;[ \t]*(\r?\n|$)|\r?\n[ \t]*\r?\n/g;
+    let start = 0, match, previous = "";
+    while ((match = separator.exec(text)) !== null) {
+      const chunk = text.slice(start, match.index);
+      // A cursor on the separator itself (just after ";" or on the blank line) belongs to the statement before it
+      if (cursor < match.index + match[0].length) return chunk.trim() ? chunk : previous;
+      if (chunk.trim()) previous = chunk;
+      start = match.index + match[0].length;
+      if (match[0].length === 0) separator.lastIndex++;
+    }
+    const last = text.slice(start);
+    return last.trim() ? last : previous;
+  }
+
+  // Every hand-off also carries the statement under the cursor (or the selection), so the Run button
+  // can run the same thing Ctrl+Enter would. Clicking Run blurs the editor, which sends it just before.
+  let lastCurrent = null;
+  function send(run) {
+    const text = editor.getValue();
+    const current = editor.getSelectedText() || statementAtCursor();
+    if (!run && text === lastSent && current === lastCurrent) return;
+    lastSent = text;
+    lastCurrent = current;
+    toStreamlit("streamlit:setComponentValue", {
+      dataType: "json",
+      value: { text: text, version: version, tab: tab, run: run, selection: run ? current : "", current: current,
+               nonce: Date.now() }
+    });
+  }
+
+  // After "alias." only that table's columns; otherwise columns of the query's tables, then table names
+  const schemaCompleter = {
+    triggerCharacters: ["."],
+    getCompletions: function (ed, session, pos, prefix, callback) {
+      const p = (prefix || "").toUpperCase(), out = [];
+      const qualifier = qualifierBefore(session, pos, prefix || "");
+      if (qualifier) {
+        const table = aliasesIn(ed.getValue())[qualifier] || qualifier;
+        for (const column of columnsByTable[table] || []) {
+          if (column.startsWith(p)) out.push({ caption: column, value: column, meta: table, score: 1000 });
+        }
+        callback(null, out);
+        return;
+      }
+      if (p.length < 2) { callback(null, []); return; }
+      for (const table in columnsByTable) {
+        for (const column of columnsByTable[table]) {
+          if (column.startsWith(p)) out.push({ caption: column, value: column, meta: table, score: 1000 });
+        }
+      }
+      for (const w of words) {
+        if (w.startsWith(p)) {
+          out.push({ caption: w, value: w, meta: "table/view", score: 500 });
+          if (out.length > 300) break;
+        }
+      }
+      callback(null, out);
+    }
+  };
+  // SQL keywords make no sense right after "alias."
+  const keywordCompleter = {
+    getCompletions: function (ed, session, pos, prefix, callback) {
+      if (qualifierBefore(session, pos, prefix || "")) { callback(null, []); return; }
+      langTools.keyWordCompleter.getCompletions(ed, session, pos, prefix, callback);
+    }
+  };
+  editor.completers = [keywordCompleter, schemaCompleter];
+
+  // When a new table name appears, send the text so Python can fetch its columns (once per table):
+  // right away once the name is complete, or after a short pause for a name at the very end of the text
+  function askForNewTables(complete) {
+    let fresh = false;
+    for (const t of tablesIn(editor.getValue(), complete)) {
+      if (!askedTables.has(t) && !columnsByTable[t]) { askedTables.add(t); fresh = true; }
+    }
+    if (fresh) send(false);
+  }
+  let tableTimer = null;
+  editor.on("change", function () {
+    askForNewTables(true);
+    clearTimeout(tableTimer);
+    tableTimer = setTimeout(function () { askForNewTables(false); }, 700);
+  });
+
+  // Columns arrive a moment after the table name was typed. If the cursor already sits after "alias.",
+  // open the suggestions now instead of waiting for the next key.
+  function openSuggestionsIfWaiting(newTables) {
+    if (!editor.isFocused() || !newTables.length || (editor.completer && editor.completer.activated)) return;
+    const pos = editor.getCursorPosition();
+    const line = editor.session.getLine(pos.row).slice(0, pos.column);
+    const m = line.match(/([A-Za-z_][\w$#]*)\.([\w$#]*)$/);
+    if (!m) return;
+    const table = aliasesIn(editor.getValue())[m[1].toUpperCase()] || m[1].toUpperCase();
+    if (newTables.includes(table)) editor.execCommand("startAutocomplete");
+  }
+
+  editor.commands.addCommand({
+    name: "runQuery",
+    bindKey: { win: "Ctrl-Enter", mac: "Command-Enter" },
+    exec: function () { send(true); }
+  });
+  editor.on("blur", function () { send(false); });
+
+  window.addEventListener("message", function (event) {
+    const data = event.data;
+    if (!data || data.type !== "streamlit:render") return;
+    const args = data.args || {};
+
+    // Replace the text only when Python loaded something new (saved query, history, tab switch)
+    if (args.version !== version || args.tab !== tab) {
+      version = args.version;
+      tab = args.tab;
+      editor.session.setValue(args.value || "");
+      lastSent = args.value || "";
+    }
+    const before = columnsByTable;
+    columnsByTable = {};
+    for (const [column, table] of args.extra_words || []) (columnsByTable[table] = columnsByTable[table] || []).push(column);
+    openSuggestionsIfWaiting(Object.keys(columnsByTable).filter(t => !before[t]));
+    if (args.words_url && args.words_url !== wordsUrl) {
+      wordsUrl = args.words_url;
+      fetch(args.words_url).then(r => r.json())
+        .then(list => { words = list; wordSet = new Set(list); })
+        .catch(() => { words = []; wordSet = new Set(); });
+    } else if (!args.words_url) {
+      words = [];
+      wordSet = new Set();
+      wordsUrl = null;
+    }
+    const dark = data.theme && data.theme.base === "dark";
+    editor.setTheme(dark ? "ace/theme/tomorrow_night" : "ace/theme/sqlserver");
+    editor.setReadOnly(!!data.disabled);
+
+    if (args.height !== height) {
+      height = args.height || 300;
+      document.getElementById("editor").style.height = height + "px";
+      editor.resize();
+      toStreamlit("streamlit:setFrameHeight", { height: height + 4 });
+    }
+  });
+
+  toStreamlit("streamlit:componentReady", { apiVersion: 1 });
+</script>
+</body>
+</html>
