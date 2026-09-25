@@ -586,6 +586,18 @@ def column_suggestions(conn, sql_text):
     return metadata.known_columns(connection_name, sql_text)
 
 
+def statement_to_run(tab):
+    """What the Run button runs: the statement under the cursor or the selection, as last reported by the
+    editor (it reports when it loses focus, i.e. when Run is clicked). Without that, e.g. right after loading a
+    saved query, the first statement; a worksheet with a single statement runs as a whole."""
+    value = ss.get('ace_editor')
+    if not ss.get('plain_editor', False) and value and value.get('tab') == ss.active_tab \
+            and value.get('version') == tab['version'] and (value.get('current') or '').strip():
+        return value['current']
+    statements = sqltools.split_statements(tab['sql'])
+    return statements[0] if len(statements) > 1 else tab['sql']
+
+
 def save_popover():
     with st.popover('💾 Save'):
         st.text_input('Query name (same name overwrites)', key='save_name')
@@ -640,15 +652,15 @@ def sql_tab(conn):
     # Run button right under the editor, bind variables next to it
     with st.container(horizontal=True, vertical_alignment='center', key='run_row'):
         if st.button('▶ Run', type='primary', key='run_button',
-                     help='Runs everything in the editor. Ctrl+Enter in the editor runs only the statement under '
-                          'the cursor (blank line or ; separates statements) or the selected text. '
-                          'Ctrl+Space shows suggestions.'):
+                     help='Runs the statement under the cursor, or the selected text (same as Ctrl+Enter in the '
+                          'editor). Statements are separated by a blank line or ;. Ctrl+Space shows suggestions.'):
             run_requested = True
+            run_text = statement_to_run(tab)
         bind_values = bind_inputs(tab['sql'])
 
     if run_requested:
         run_active_tab(run_text or tab['sql'], bind_values, row_limit, conn)
-    run_compare(tab['sql'], bind_values, row_limit, conn)
+    run_compare(statement_to_run(tab), bind_values, row_limit, conn)
 
     if tab['error']:
         show_error(*tab['error'])

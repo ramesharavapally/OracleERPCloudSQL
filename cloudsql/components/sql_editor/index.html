@@ -82,7 +82,8 @@
     let start = 0, match, previous = "";
     while ((match = separator.exec(text)) !== null) {
       const chunk = text.slice(start, match.index);
-      if (cursor <= match.index) return chunk.trim() ? chunk : previous;
+      // A cursor on the separator itself (just after ";" or on the blank line) belongs to the statement before it
+      if (cursor < match.index + match[0].length) return chunk.trim() ? chunk : previous;
       if (chunk.trim()) previous = chunk;
       start = match.index + match[0].length;
       if (match[0].length === 0) separator.lastIndex++;
@@ -91,14 +92,19 @@
     return last.trim() ? last : previous;
   }
 
+  // Every hand-off also carries the statement under the cursor (or the selection), so the Run button
+  // can run the same thing Ctrl+Enter would. Clicking Run blurs the editor, which sends it just before.
+  let lastCurrent = null;
   function send(run) {
     const text = editor.getValue();
-    const selection = run ? (editor.getSelectedText() || statementAtCursor()) : "";
-    if (!run && text === lastSent) return;
+    const current = editor.getSelectedText() || statementAtCursor();
+    if (!run && text === lastSent && current === lastCurrent) return;
     lastSent = text;
+    lastCurrent = current;
     toStreamlit("streamlit:setComponentValue", {
       dataType: "json",
-      value: { text: text, version: version, tab: tab, run: run, selection: run ? selection : "", nonce: Date.now() }
+      value: { text: text, version: version, tab: tab, run: run, selection: run ? current : "", current: current,
+               nonce: Date.now() }
     });
   }
 

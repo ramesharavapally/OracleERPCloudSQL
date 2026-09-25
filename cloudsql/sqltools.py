@@ -18,6 +18,11 @@ def _split_code(sql):
         yield True, sql[pos:]
 
 
+def split_statements(sql):
+    """Statements in the editor, separated like the editor does it: by a blank line or by ';' at a line end."""
+    return [s.strip() for s in re.split(r';[ \t]*(?:\r?\n|$)|\r?\n[ \t]*\r?\n', sql or '') if s.strip()]
+
+
 def clean_sql(sql):
     """Trim whitespace and trailing ';' or '/' that BI Publisher rejects."""
     sql = sql.strip()
