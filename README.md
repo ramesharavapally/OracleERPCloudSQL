@@ -43,7 +43,7 @@ uv run streamlit run app.py
 | Run the statement under the cursor | **Ctrl+Enter**. Statements are separated by a blank line or `;` |
 | Run only part of the text | Select it, then **Ctrl+Enter** |
 | Run everything in the editor | **▶ Run** |
-| Autocomplete | Type 2+ letters or press **Ctrl+Space**: SQL keywords, table/view names (after downloading the object list) and columns of tables used in the query |
+| Autocomplete | Type 2+ letters or press **Ctrl+Space**: SQL keywords, table/view names (after downloading the object list) and columns of the tables in your query. Type `alias.` (e.g. `h.` after `FROM doo_headers_all h`) to list only that table's columns. Columns are fetched from the pod once per table, the moment you type the table name, and then kept locally |
 | Bind variables | Write `:p_org_id`; a small value box appears next to **▶ Run**. Numbers go in as-is, text is quoted, empty means `NULL` |
 | Row limit | Top right: 100 / 1,000 (default) / 10,000 / All rows. Sent as `FETCH FIRST n ROWS ONLY` |
 | Format | **Format** (top right) re-indents each statement and upper-cases keywords |

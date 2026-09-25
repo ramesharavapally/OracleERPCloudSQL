@@ -567,6 +567,25 @@ def schema_browser(conn):
 
 # ---------- SQL tab ----------
 
+def column_suggestions(conn, sql_text):
+    """[(column, table)] for the editor autocomplete. Columns of tables used in the SQL that were never
+    looked up are fetched first, in one query. A failed lookup never blocks the editor: those tables are
+    skipped for the rest of the session (Refresh columns in the Schema browser still works)."""
+    connection_name, url, username, password = conn
+    if url and username and password and sql_text.strip():
+        skipped = ss.setdefault('column_lookup_failed', set())
+        todo = [t for t in metadata.tables_missing_columns(connection_name, sql_text)
+                if (connection_name, t) not in skipped]
+        if todo:
+            try:
+                metadata.fetch_columns(
+                    connection_name, todo,
+                    lambda sql: bip_client.run_query(url, username, password, sql, get_report_name(), (15, 60)))
+            except Exception:
+                skipped.update((connection_name, t) for t in todo)
+    return metadata.known_columns(connection_name, sql_text)
+
+
 def save_popover():
     with st.popover('💾 Save'):
         st.text_input('Query name (same name overwrites)', key='save_name')
@@ -603,10 +622,13 @@ def sql_tab(conn):
         ss.setdefault('sql_editor', tab['sql'])
         st.text_area('Enter valid query', height=EDITOR_HEIGHT, key='sql_editor', label_visibility='collapsed')
     else:
+        # The editor's latest text is known before it is drawn, so columns of newly typed tables can be fetched
+        # first and offered in this same run
+        latest_sql = current_sql()
+        extra_words = column_suggestions(conn, latest_sql) if connection_name else []
         value = sql_editor(tab['sql'], tab['version'], ss.active_tab,
                            words_url=metadata.words_url(connection_name) if connection_name else None,
-                           extra_words=metadata.known_columns(connection_name, tab['sql']) if connection_name else [],
-                           height=EDITOR_HEIGHT, key='ace_editor')
+                           extra_words=extra_words, height=EDITOR_HEIGHT, key='ace_editor')
         # Ctrl+Enter in the editor runs the query (or the selected part of it) once
         if value and value.get('run') and value.get('tab') == ss.active_tab \
                 and value.get('version') == tab['version'] and value.get('nonce') != ss.get('last_nonce'):

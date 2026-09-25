@@ -19,6 +19,18 @@ COLUMNS_SQL = """SELECT column_name, data_type, data_length, data_precision, dat
  WHERE owner = {owner} AND table_name = {table}
  ORDER BY column_id"""
 
+# Columns of several tables in one round trip (used for the editor autocomplete)
+COLUMNS_BATCH_SQL = """SELECT owner, table_name, column_name, data_type, data_length, data_precision, data_scale,
+       nullable, column_id
+  FROM all_tab_columns
+ WHERE table_name IN ({tables})
+   AND owner IN (SELECT username FROM all_users WHERE oracle_maintained = 'N')
+ ORDER BY owner, table_name, column_id"""
+
+# Table names written after FROM / JOIN, optionally with an owner prefix (FROM fusion.po_headers_all h)
+_FROM_JOIN = re.compile(r'\b(?:FROM|JOIN)\s+(?:[A-Za-z_][\w$#]*\.)?([A-Za-z_][\w$#]*)', re.IGNORECASE)
+_IDENTIFIER = re.compile(r'[A-Za-z_][\w$#]*')
+
 
 def _quote(value):
     return "'" + str(value).replace("'", "''") + "'"
@@ -51,6 +63,13 @@ def init_db():
                 object_count INTEGER,
                 loaded_at    TEXT
             )""")
+        # Tables whose columns were already looked up for autocomplete (also those that do not exist)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS meta_checked (
+                connection TEXT NOT NULL,
+                table_name TEXT NOT NULL,
+                PRIMARY KEY (connection, table_name)
+            )""")
 
 
 def _words_file(connection):
@@ -76,6 +95,8 @@ def refresh_objects(connection, run_sql):
     del df
     with _connect() as conn, conn:
         conn.execute('DELETE FROM meta_objects WHERE connection = ?', (connection,))
+        # Tables that did not exist before are looked up again after a refresh
+        conn.execute('DELETE FROM meta_checked WHERE connection = ?', (connection,))
         conn.executemany('INSERT INTO meta_objects VALUES (?, ?, ?, ?)',
                          [(connection, *row) for row in rows])
         conn.execute("""INSERT INTO meta_status VALUES (?, ?, ?)
@@ -125,21 +146,70 @@ def get_columns(connection, owner, table, run_sql, refresh=False):
 
     df = run_sql(COLUMNS_SQL.format(owner=_quote(owner), table=_quote(table)))
     df.columns = [c.upper() for c in df.columns]
-    rows = []
-    for r in df.itertuples(index=False):
-        data_type = str(r.DATA_TYPE)
-        if data_type in ('VARCHAR2', 'CHAR', 'NVARCHAR2', 'RAW') and r.DATA_LENGTH == r.DATA_LENGTH:
-            data_type += f'({int(r.DATA_LENGTH)})'
-        elif data_type == 'NUMBER' and r.DATA_PRECISION == r.DATA_PRECISION:  # x == x is False for NaN
-            scale = int(r.DATA_SCALE) if r.DATA_SCALE == r.DATA_SCALE else 0
-            data_type += f'({int(r.DATA_PRECISION)}{"," + str(scale) if scale else ""})'
-        rows.append((str(r.COLUMN_NAME), data_type, str(r.NULLABLE), int(r.COLUMN_ID)))
+    rows = [_column_row(r) for r in df.itertuples(index=False)]
     with _connect() as conn, conn:
         conn.execute('DELETE FROM meta_columns WHERE connection = ? AND owner = ? AND table_name = ?',
                      (connection, owner, table))
         conn.executemany('INSERT INTO meta_columns VALUES (?, ?, ?, ?, ?, ?, ?)',
                          [(connection, owner, table, *row) for row in rows])
     return rows
+
+
+def _column_row(r):
+    """(column_name, data_type, nullable, column_id) from one ALL_TAB_COLUMNS row, e.g. VARCHAR2(30), NUMBER(18)."""
+    data_type = str(r.DATA_TYPE)
+    if data_type in ('VARCHAR2', 'CHAR', 'NVARCHAR2', 'RAW') and r.DATA_LENGTH == r.DATA_LENGTH:
+        data_type += f'({int(r.DATA_LENGTH)})'
+    elif data_type == 'NUMBER' and r.DATA_PRECISION == r.DATA_PRECISION:  # x == x is False for NaN
+        scale = int(r.DATA_SCALE) if r.DATA_SCALE == r.DATA_SCALE else 0
+        data_type += f'({int(r.DATA_PRECISION)}{"," + str(scale) if scale else ""})'
+    return str(r.COLUMN_NAME), data_type, str(r.NULLABLE), int(r.COLUMN_ID)
+
+
+def tables_in_sql(connection, sql_text):
+    """Upper-case names of tables the SQL uses: words after FROM/JOIN, plus any word that is a known
+    table or view in the downloaded object list (catches comma joins like FROM a x, b y)."""
+    names = {m.upper() for m in _FROM_JOIN.findall(sql_text or '')}
+    words = list({w.upper() for w in _IDENTIFIER.findall(sql_text or '')})[:500]
+    if words:
+        with _connect() as conn:
+            names.update(row[0] for row in conn.execute(
+                f"""SELECT DISTINCT object_name FROM meta_objects
+                     WHERE connection = ? AND object_name IN ({','.join('?' * len(words))})""",
+                (connection, *words)))
+    return names
+
+
+def tables_missing_columns(connection, sql_text, limit=10):
+    """Tables used in the SQL whose columns were never looked up (at most `limit`, sorted)."""
+    names = tables_in_sql(connection, sql_text)
+    if not names:
+        return []
+    marks = ','.join('?' * len(names))
+    with _connect() as conn:
+        known = {row[0] for row in conn.execute(
+            f"""SELECT table_name FROM meta_checked WHERE connection = ? AND table_name IN ({marks})
+                UNION SELECT table_name FROM meta_columns WHERE connection = ? AND table_name IN ({marks})""",
+            (connection, *names, connection, *names))}
+    return sorted(names - known)[:limit]
+
+
+def fetch_columns(connection, tables, run_sql):
+    """Look up the columns of several tables in one query and cache them. Tables that do not exist
+    are remembered too, so they are not asked for again."""
+    if not tables:
+        return
+    df = run_sql(COLUMNS_BATCH_SQL.format(tables=', '.join(_quote(t) for t in tables)))
+    df.columns = [c.upper() for c in df.columns]
+    rows = [(str(r.OWNER), str(r.TABLE_NAME), *_column_row(r)) for r in df.itertuples(index=False)]
+    del df
+    with _connect() as conn, conn:
+        for owner, table in {(r[0], r[1]) for r in rows}:
+            conn.execute('DELETE FROM meta_columns WHERE connection = ? AND owner = ? AND table_name = ?',
+                         (connection, owner, table))
+        conn.executemany('INSERT INTO meta_columns VALUES (?, ?, ?, ?, ?, ?, ?)',
+                         [(connection, *row) for row in rows])
+        conn.executemany('INSERT OR IGNORE INTO meta_checked VALUES (?, ?)', [(connection, t) for t in tables])
 
 
 def known_columns(connection, sql_text, limit_tables=20):

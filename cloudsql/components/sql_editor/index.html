@@ -33,7 +33,46 @@
   editor.container.style.lineHeight = "1.5";
   editor.renderer.updateFontSize();
 
-  let version = null, tab = null, words = [], wordsUrl = null, extraWords = [], lastSent = null, height = 0;
+  let version = null, tab = null, words = [], wordSet = new Set(), wordsUrl = null, lastSent = null, height = 0;
+  let columnsByTable = {};          // TABLE -> [COLUMN, ...] for tables used in the query (sent by Python)
+  const askedTables = new Set();    // tables Python was already told about
+
+  const SQL_WORDS = new Set(["WHERE", "ON", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "FULL", "CROSS", "GROUP",
+    "ORDER", "HAVING", "UNION", "MINUS", "INTERSECT", "CONNECT", "START", "FETCH", "OFFSET", "FOR", "AND", "OR",
+    "SELECT", "FROM", "AS", "SET", "USING", "NATURAL", "PARTITION", "WITH"]);
+
+  // alias -> TABLE, from "FROM table alias", "JOIN table AS alias" and "..., table alias"
+  function aliasesIn(text) {
+    const aliases = {};
+    const re = /(?:\bfrom|\bjoin|,)\s+(?:[A-Za-z_][\w$#]*\.)?([A-Za-z_][\w$#]*)(?:\s+(?:as\s+)?([A-Za-z_][\w$#]*))?/gi;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const table = m[1].toUpperCase();
+      aliases[table] = table;
+      if (m[2] && !SQL_WORDS.has(m[2].toUpperCase())) aliases[m[2].toUpperCase()] = table;
+    }
+    return aliases;
+  }
+
+  // Tables Python should fetch columns for: names after FROM/JOIN, or words that are known tables.
+  // With complete=true only names already followed by a space, comma, bracket... (not still being typed).
+  function tablesIn(text, complete) {
+    const end = complete ? "(?=[^\\w$#])" : "";
+    const found = new Set();
+    const re = new RegExp("\\b(?:from|join)\\s+(?:[A-Za-z_][\\w$#]*\\.)?([A-Za-z_][\\w$#]*)" + end, "gi");
+    let m;
+    while ((m = re.exec(text)) !== null) found.add(m[1].toUpperCase());
+    const words = new RegExp("[A-Za-z_][\\w$#]*" + end, "g");
+    while ((m = words.exec(text)) !== null) if (wordSet.has(m[0].toUpperCase())) found.add(m[0].toUpperCase());
+    return found;
+  }
+
+  // The word just before the cursor when it ends with a dot ("h." or "po_headers_all."), else null
+  function qualifierBefore(session, pos, prefix) {
+    const line = session.getLine(pos.row).slice(0, pos.column - prefix.length);
+    const m = line.match(/([A-Za-z_][\w$#]*)\.$/);
+    return m ? m[1].toUpperCase() : null;
+  }
 
   // TOAD-style: the statement under the cursor is the block between blank lines or semicolons
   function statementAtCursor() {
@@ -63,13 +102,25 @@
     });
   }
 
-  // Table names from the downloaded object list, plus columns of tables used in the current query
+  // After "alias." only that table's columns; otherwise columns of the query's tables, then table names
   const schemaCompleter = {
+    triggerCharacters: ["."],
     getCompletions: function (ed, session, pos, prefix, callback) {
-      if (!prefix || prefix.length < 2) { callback(null, []); return; }
-      const p = prefix.toUpperCase(), out = [];
-      for (const [column, table] of extraWords) {
-        if (column.startsWith(p)) out.push({ caption: column, value: column, meta: table, score: 1000 });
+      const p = (prefix || "").toUpperCase(), out = [];
+      const qualifier = qualifierBefore(session, pos, prefix || "");
+      if (qualifier) {
+        const table = aliasesIn(ed.getValue())[qualifier] || qualifier;
+        for (const column of columnsByTable[table] || []) {
+          if (column.startsWith(p)) out.push({ caption: column, value: column, meta: table, score: 1000 });
+        }
+        callback(null, out);
+        return;
+      }
+      if (p.length < 2) { callback(null, []); return; }
+      for (const table in columnsByTable) {
+        for (const column of columnsByTable[table]) {
+          if (column.startsWith(p)) out.push({ caption: column, value: column, meta: table, score: 1000 });
+        }
       }
       for (const w of words) {
         if (w.startsWith(p)) {
@@ -80,7 +131,42 @@
       callback(null, out);
     }
   };
-  editor.completers = [langTools.keyWordCompleter, schemaCompleter];
+  // SQL keywords make no sense right after "alias."
+  const keywordCompleter = {
+    getCompletions: function (ed, session, pos, prefix, callback) {
+      if (qualifierBefore(session, pos, prefix || "")) { callback(null, []); return; }
+      langTools.keyWordCompleter.getCompletions(ed, session, pos, prefix, callback);
+    }
+  };
+  editor.completers = [keywordCompleter, schemaCompleter];
+
+  // When a new table name appears, send the text so Python can fetch its columns (once per table):
+  // right away once the name is complete, or after a short pause for a name at the very end of the text
+  function askForNewTables(complete) {
+    let fresh = false;
+    for (const t of tablesIn(editor.getValue(), complete)) {
+      if (!askedTables.has(t) && !columnsByTable[t]) { askedTables.add(t); fresh = true; }
+    }
+    if (fresh) send(false);
+  }
+  let tableTimer = null;
+  editor.on("change", function () {
+    askForNewTables(true);
+    clearTimeout(tableTimer);
+    tableTimer = setTimeout(function () { askForNewTables(false); }, 700);
+  });
+
+  // Columns arrive a moment after the table name was typed. If the cursor already sits after "alias.",
+  // open the suggestions now instead of waiting for the next key.
+  function openSuggestionsIfWaiting(newTables) {
+    if (!editor.isFocused() || !newTables.length || (editor.completer && editor.completer.activated)) return;
+    const pos = editor.getCursorPosition();
+    const line = editor.session.getLine(pos.row).slice(0, pos.column);
+    const m = line.match(/([A-Za-z_][\w$#]*)\.([\w$#]*)$/);
+    if (!m) return;
+    const table = aliasesIn(editor.getValue())[m[1].toUpperCase()] || m[1].toUpperCase();
+    if (newTables.includes(table)) editor.execCommand("startAutocomplete");
+  }
 
   editor.commands.addCommand({
     name: "runQuery",
@@ -101,12 +187,18 @@
       editor.session.setValue(args.value || "");
       lastSent = args.value || "";
     }
-    extraWords = args.extra_words || [];
+    const before = columnsByTable;
+    columnsByTable = {};
+    for (const [column, table] of args.extra_words || []) (columnsByTable[table] = columnsByTable[table] || []).push(column);
+    openSuggestionsIfWaiting(Object.keys(columnsByTable).filter(t => !before[t]));
     if (args.words_url && args.words_url !== wordsUrl) {
       wordsUrl = args.words_url;
-      fetch(args.words_url).then(r => r.json()).then(list => { words = list; }).catch(() => { words = []; });
+      fetch(args.words_url).then(r => r.json())
+        .then(list => { words = list; wordSet = new Set(list); })
+        .catch(() => { words = []; wordSet = new Set(); });
     } else if (!args.words_url) {
       words = [];
+      wordSet = new Set();
       wordsUrl = null;
     }
     const dark = data.theme && data.theme.base === "dark";

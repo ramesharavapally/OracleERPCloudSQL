@@ -100,7 +100,7 @@ def delete_connection(name):
     with _connect() as conn, conn:
         conn.execute('DELETE FROM connections WHERE name = ?', (name,))
         # The schema cache belongs to the connection as well
-        for table in ('meta_objects', 'meta_columns', 'meta_status'):
+        for table in ('meta_objects', 'meta_columns', 'meta_status', 'meta_checked'):
             if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone():
                 conn.execute(f'DELETE FROM {table} WHERE connection = ?', (name,))
 
