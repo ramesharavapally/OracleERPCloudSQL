@@ -651,9 +651,7 @@ def sql_tab(conn):
 
     # Run button right under the editor, bind variables next to it
     with st.container(horizontal=True, vertical_alignment='center', key='run_row'):
-        if st.button('▶ Run', type='primary', key='run_button',
-                     help='Runs the statement under the cursor, or the selected text (same as Ctrl+Enter in the '
-                          'editor). Statements are separated by a blank line or ;. Ctrl+Space shows suggestions.'):
+        if st.button('▶ Run', type='primary', key='run_button'):
             run_requested = True
             run_text = statement_to_run(tab)
         bind_values = bind_inputs(tab['sql'])
