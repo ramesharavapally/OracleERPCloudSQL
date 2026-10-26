@@ -1,4 +1,5 @@
 import configparser
+import json
 
 from db import connect as _connect, now as _now
 
@@ -69,6 +70,38 @@ def delete_connection(name):
         for table in ('meta_objects', 'meta_columns', 'meta_status', 'meta_checked'):
             if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone():
                 conn.execute(f'DELETE FROM {table} WHERE connection = ?', (name,))
+
+
+def export_connections_json():
+    """All connections as JSON, passwords included in plain text, so keep the file private."""
+    with _connect() as conn:
+        rows = conn.execute('SELECT name, url, username, password_fallback FROM connections ORDER BY name').fetchall()
+    return json.dumps({'connections': [{'name': n, 'url': u, 'username': user, 'password': pw or ''}
+                                       for n, u, user, pw in rows]}, indent=2)
+
+
+def import_connections_json(text, overwrite=False):
+    """Returns (added, updated, skipped)."""
+    data = json.loads(text)
+    items = data.get('connections') if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        raise ValueError('not a connections export file')
+    existing = set(list_connections())
+    added = updated = skipped = 0
+    for item in items:
+        name, url, user = (str(item.get(k) or '').strip() for k in ('name', 'url', 'username'))
+        if not (name and url and user):
+            skipped += 1
+        elif name in existing and not overwrite:
+            skipped += 1
+        else:
+            save_connection(name, url, user, str(item.get('password') or ''))
+            if name in existing:
+                updated += 1
+            else:
+                added += 1
+                existing.add(name)
+    return added, updated, skipped
 
 
 def set_last_sql(name, sql_text):

@@ -35,6 +35,7 @@ uv run streamlit run app.py
 ### Connections
 - Add a pod under **Connection settings** in the sidebar: name, URL (`https://xxxx.fa.ocs.oraclecloud.com`), username and password.
 - **Connections (including username and password) are kept in `cloudsql/cloudsql_queries.db`**, which is not committed to git. Copy that file to move your connections to another clone. Passwords saved by older versions in the Windows Credential Manager or `config.ini` are moved into it automatically on first start.
+- **Export / import connections** from the sidebar (JSON, passwords in plain text, so keep the file private).
 - **↩ Last query run on …** reopens the last query you ran on that connection.
 
 ### SQL editor

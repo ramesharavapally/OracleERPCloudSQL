@@ -223,6 +223,19 @@ def load_history_query():
     if sql_text is not None:
         set_editor_text(sql_text)
 
+def import_connections():
+    uploaded = ss.get('import_conn_file')
+    if uploaded is None:
+        flash('warning', 'Choose a connections JSON file to import first')
+        return
+    try:
+        added, updated, skipped = connections.import_connections_json(
+            uploaded.getvalue().decode('utf-8'), overwrite=ss.get('import_conn_overwrite', False))
+        flash('success', f'Imported connections: {added} new, {updated} overwritten, {skipped} skipped')
+        ss.form_rev = ss.get('form_rev', 0) + 1
+    except Exception as e:
+        flash('error', f'Could not import the file: {e}')
+
 def load_last_query(connection_name):
     set_editor_text(connections.get_last_sql(connection_name))
 
@@ -294,6 +307,15 @@ def connection_sidebar():
             confirm = st.checkbox(f'Yes, delete {selected}', key=f'confirm_delete_{selected}')
             st.button('Delete connection', on_click=delete_connection_clicked, args=(selected,),
                       disabled=not confirm, width='stretch')
+
+    with st.sidebar.expander('Import / export connections'):
+        st.caption('⚠ The export file contains passwords in plain text. Keep it private.')
+        download_button('⬇ Export connections', lambda: connections.export_connections_json().encode('utf-8'),
+                        key='export_conns', file_name='cloudsql_connections.json', mime='application/json',
+                        width='stretch')
+        st.file_uploader('Import from JSON', type=['json'], key='import_conn_file')
+        st.checkbox('Overwrite connections with the same name', key='import_conn_overwrite')
+        st.button('Import connections', on_click=import_connections, width='stretch')
 
     if selected and connections.get_last_sql(selected):
         st.sidebar.button(f'↩ Last query run on {selected}', on_click=load_last_query, args=(selected,),
