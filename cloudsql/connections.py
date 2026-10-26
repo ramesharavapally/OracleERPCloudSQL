@@ -2,10 +2,6 @@ import configparser
 
 from db import connect as _connect, now as _now
 
-# Passwords go to the operating system's credential store (Windows Credential Manager on Windows).
-# Only when no credential store is available do they fall back to the local SQLite file.
-KEYRING_SERVICE = 'OracleERPCloudSQL'
-
 
 def init_db():
     with _connect() as conn, conn:
@@ -18,58 +14,36 @@ def init_db():
                 last_sql          TEXT,
                 updated_at        TEXT NOT NULL
             )""")
+        # Older versions kept passwords in the Windows Credential Manager; move them into the table once
+        for (name,) in conn.execute('SELECT name FROM connections WHERE password_fallback IS NULL').fetchall():
+            password = _legacy_keyring_password(name)
+            if password:
+                conn.execute('UPDATE connections SET password_fallback = ? WHERE name = ?', (password, name))
 
 
-# ---------- Password storage ----------
+# The password column is still called password_fallback so databases created by older versions keep working.
 
-_keyring_broken = False
-
-
-def _keyring_call(action, *args):
-    """Call keyring.<action>(...). Returns (ok, result). A missing or failing credential store never breaks the app."""
-    global _keyring_broken
-    if _keyring_broken:
-        return False, None
+def _legacy_keyring_password(name):
     try:
         import keyring
-        return True, getattr(keyring, action)(KEYRING_SERVICE, *args)
-    except (KeyboardInterrupt, SystemExit):
-        raise
-    except Exception:
-        # No backend, nothing to delete, access denied...: fall back for this call
-        return False, None
-    except BaseException:
-        # Some platform backends crash outside the Exception hierarchy; stop trying for this run
-        _keyring_broken = True
-        return False, None
-
-
-def _store_password(name, password):
-    """Returns True when the password went to the OS credential store."""
-    return _keyring_call('set_password', name, password)[0]
-
-
-def _read_password(name):
-    return _keyring_call('get_password', name)[1]
-
-
-def _forget_password(name):
-    _keyring_call('delete_password', name)
+        return keyring.get_password('OracleERPCloudSQL', name)
+    except BaseException as e:
+        if isinstance(e, (KeyboardInterrupt, SystemExit)):
+            raise
+        return None
 
 
 # ---------- Connections ----------
 
 def save_connection(name, url, username, password):
-    """Create or update a connection. Returns True when the password is in the OS credential store."""
-    in_keyring = _store_password(name, password)
+    """Create or update a connection, including its username and password."""
     with _connect() as conn, conn:
         conn.execute("""
             INSERT INTO connections (name, url, username, password_fallback, updated_at)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET url = excluded.url, username = excluded.username,
                    password_fallback = excluded.password_fallback, updated_at = excluded.updated_at""",
-                     (name, url.rstrip('/'), username, None if in_keyring else password, _now()))
-    return in_keyring
+                     (name, url.rstrip('/'), username, password, _now()))
 
 
 def list_connections():
@@ -84,19 +58,11 @@ def get_connection(name):
                            (name,)).fetchone()
     if not row:
         return '', '', ''
-    url, username, fallback = row
-    password = fallback if fallback is not None else _read_password(name)
+    url, username, password = row
     return url, username, password or ''
 
 
-def password_in_keyring(name):
-    with _connect() as conn:
-        row = conn.execute('SELECT password_fallback FROM connections WHERE name = ?', (name,)).fetchone()
-    return bool(row) and row[0] is None
-
-
 def delete_connection(name):
-    _forget_password(name)
     with _connect() as conn, conn:
         conn.execute('DELETE FROM connections WHERE name = ?', (name,))
         # The schema cache belongs to the connection as well

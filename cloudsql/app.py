@@ -249,16 +249,16 @@ def save_connection_clicked(key):
     if not (name and url and username and password):
         flash('warning', 'Fill in connection name, URL, username and password')
         return
-    in_keyring = connections.save_connection(name, url, username, password)
+    connections.save_connection(name, url, username, password)
     flash('success', f'Saved connection {name}')
-    if not in_keyring:
-        flash('warning', 'No credential store was available, so the password is kept in the local database file')
     try:
         create_report(url.rstrip('/'), username, password, get_datamodel_name(), get_report_name())
     except Exception as e:
         flash('error', f'Connection saved, but the report could not be created: {e}')
     ss.conn_pick = name
     ss.selected_connection = name
+    # Streamlit ignores value= for a widget key it already holds, so new keys make the form reload what was saved
+    ss.form_rev = ss.get('form_rev', 0) + 1
 
 def delete_connection_clicked(name):
     connections.delete_connection(name)
@@ -284,17 +284,13 @@ def connection_sidebar():
         ss.selected_connection = selected
 
     with st.sidebar.expander('Connection settings', expanded=not saved):
-        key = selected or 'new'
+        key = f"{selected or 'new'}_{ss.get('form_rev', 0)}"
         name = st.text_input('Connection Name', value=selected or '', key=f'conn_name_{key}')
         url = st.text_input('API URL', value=url, key=f'conn_url_{key}', placeholder='https://xxxx.fa.ocs.oraclecloud.com')
         username = st.text_input('Username', value=username, key=f'conn_user_{key}')
         password = st.text_input('Password', type='password', value=password, key=f'conn_pw_{key}')
         st.button('Save', on_click=save_connection_clicked, args=(key,), width='stretch')
         if selected:
-            if connections.password_in_keyring(selected):
-                st.caption('🔒 Password is kept in the Windows Credential Manager')
-            else:
-                st.caption('⚠ Password is kept in the local database file (no credential store available)')
             confirm = st.checkbox(f'Yes, delete {selected}', key=f'confirm_delete_{selected}')
             st.button('Delete connection', on_click=delete_connection_clicked, args=(selected,),
                       disabled=not confirm, width='stretch')
@@ -676,7 +672,7 @@ def main():
     migrated = connections.migrate_from_config(CONFIG_FILE)
     if migrated:
         flash('info', f"Moved connections {', '.join(migrated)} out of config.ini into the local database. "
-                      'Their passwords are kept in the Windows Credential Manager when it is available.')
+                      'Their passwords are kept in the local database file.')
     init_tabs()
     ss.setdefault('plain_editor', use_plain_editor())
 
