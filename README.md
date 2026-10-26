@@ -34,7 +34,8 @@ uv run streamlit run app.py
 
 ### Connections
 - Add a pod under **Connection settings** in the sidebar: name, URL (`https://xxxx.fa.ocs.oraclecloud.com`), username and password.
-- **Passwords are kept in the Windows Credential Manager**, not in a file. Connections saved by older versions in `config.ini` are moved there automatically on first start.
+- **Connections (including username and password) are kept in `cloudsql/cloudsql_queries.db`**, which is not committed to git. Copy that file to move your connections to another clone. Passwords saved by older versions in the Windows Credential Manager or `config.ini` are moved into it automatically on first start.
+- **Export / import connections** from the sidebar (JSON, passwords in plain text, so keep the file private).
 - **↩ Last query run on …** reopens the last query you ran on that connection.
 
 ### SQL editor
@@ -77,7 +78,7 @@ uv run streamlit run app.py
 | What | Where |
 |---|---|
 | Saved queries, run history, connections, schema cache | `cloudsql/cloudsql_queries.db` (SQLite). **Back up this one file.** |
-| Passwords | Windows Credential Manager (service `OracleERPCloudSQL`) |
+| Passwords | Local SQLite file `cloudsql/cloudsql_queries.db` (plain text, keep the file private) |
 | Autocomplete word lists | `cloudsql/components/sql_editor/cache/` |
 | Report paths and optional query timeout | `cloudsql/config.ini` (`[DEFAULT]` section; `query_timeout_seconds`, default 600) |
 

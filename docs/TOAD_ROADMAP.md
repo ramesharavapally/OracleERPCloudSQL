@@ -76,7 +76,7 @@ History and saved queries keep your **original** SQL (with `:binds`), so reloade
 
 ### ✅ Phase 5: Hardening (done)
 
-- **Passwords** are kept in the Windows Credential Manager via `keyring`. Connections moved from `config.ini` to SQLite, and `config.ini` now only holds `[DEFAULT]` settings. Old `config.ini` connections are migrated automatically. If no credential store is available, the password falls back to the local database file and the sidebar says so.
+- **Passwords** are kept with the connection in the local SQLite database (plain text; the file is gitignored). Connections moved from `config.ini` to SQLite, and `config.ini` now only holds `[DEFAULT]` settings. Old `config.ini` connections and Credential Manager passwords are migrated automatically.
 - **`bip_client.py`**: one shared `requests.Session`, a connect timeout (15 s), a read timeout (`query_timeout_seconds`, default 600 s), and readable errors (`ORA-xxxxx` line, HTTP 401/403/404, last Java exception message). Full details stay available in an expander.
 - **Code split**: `app.py` (UI), `bip_client.py` (SOAP), `reportutils.py` (report creation), `connections.py`, `querystore.py`, `metadata.py`, `sqltools.py`, `compare.py`, `db.py` (shared SQLite helper).
 
